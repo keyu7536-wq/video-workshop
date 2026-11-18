@@ -1,0 +1,2 @@
+# Shared compatibility constraint for the optional Qwen TTS and ASR environment.
+transformers==4.57.6

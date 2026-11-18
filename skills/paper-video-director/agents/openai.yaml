@@ -1,0 +1,4 @@
+interface:
+  display_name: "论文视频导演"
+  short_description: "深读论文和作者项目，将证据、叙事、镜头与配音组合为可复核的视频作品"
+  default_prompt: "使用 $paper-video-director 深入阅读这篇论文和作者项目，制作有来源依据、画面对应观点的中文解说视频。"

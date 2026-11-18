@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频工坊 · 视频创作工作台</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230e766e'/%3E%3Cpath d='M26 18 46 32 26 46Z' fill='white'/%3E%3C/svg%3E"><link rel="stylesheet" href="/style.css"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" id="appBrand" href="/" aria-label="视频工坊 首页"><span class="brand-mark">影</span><span><b id="appName">视频工坊</b><small>文案、资料与素材，生成视频</small></span></a>
+  <button class="new-project" id="newProject"><span>＋</span> 新建视频</button>
+  <div class="sidebar-label">我的创作 <button id="refreshJobs" title="刷新历史任务">↻</button></div>
+  <nav id="jobList" aria-label="历史任务"><p class="muted small">正在读取…</p></nav>
+  <div class="sidebar-bottom"><span class="online-dot"></span> 在这台电脑上制作 <small>原始文件与成片保存在本地</small></div>
+</aside>
+<main>
+  <header class="topbar"><div class="breadcrumbs">工作空间 <span>/</span> <strong id="projectName">新的视频</strong></div><div class="top-actions"><button id="quickCreate" class="primary">生成文稿与分镜 ↗</button><button id="openSettings" class="model-pill"><span class="online-dot"></span><span id="backendLabel">Codex CLI</span><span>⌄</span></button></div></header>
+  <div class="workspace">
+    <div class="workspace-top"><div><span class="eyebrow">CREATE WITH CONTEXT</span><h1>让每一句讲解，都有对应的画面。</h1><p>提供文案或资料，自动完成写稿、分镜、配音和剪辑。</p></div></div>
+    <div class="tabs" role="tablist"><button role="tab" class="active" data-tab="create">01　添加资料</button><button role="tab" data-tab="editor">02　文稿与分镜</button><button role="tab" data-tab="output">03　预览与导出</button></div>
+
+    <section id="view-create" class="view">
+      <div class="create-grid"><div class="composer panel">
+        <div class="section-heading"><span class="section-icon">✦</span><div><h2>这次想做什么视频？</h2><p>填写主题、观众、发布平台和希望强调的内容。</p></div></div>
+        <label class="sr-only" for="brief">制作要求</label><textarea id="brief" class="brief-input" rows="3" placeholder="例如：把这篇论文做成约90秒的中文科普视频。先用演示提出问题，再解释方法，展示实验结果，最后说明局限。">面向目标观众，用清楚自然的语言讲述主题。画面与内容对应，保留关键演示，核对事实与来源。</textarea>
+        <button type="button" class="text-button" id="paperScreeningBrief">添加“论文初筛”用途到要求中</button>
+        <p id="newTaskHint" class="small muted" hidden>这里修改的是新任务的资料。再次生成会创建新任务，原任务和已有成片保留。</p>
+        <div class="mode-switch" role="group" aria-label="文案来源"><button class="selected" data-mode="auto">让 AI 根据资料写稿</button><button data-mode="script">使用我的文案</button></div>
+        <div id="autoText"><label for="article">文章正文 <span>可选 · 也可直接添加 PDF 或文章链接</span></label><textarea id="article" rows="4" placeholder="把文章、研究摘要或需要讲解的内容粘贴在这里…"></textarea></div>
+        <div id="scriptText" hidden><label for="script">你的讲解文案 <span>按原文保留，AI 负责安排镜头</span></label><textarea id="script" rows="6" placeholder="粘贴已经写好的文案。成片长度将跟随实际配音，不强行删改文字。"></textarea></div>
+        <div class="story-settings"><label for="storyFramework">讲述结构<select id="storyFramework" aria-describedby="storyFrameworkHint"><option value="auto" selected>自动选择，兼顾清晰与节奏</option><option value="problem_solution">问题与改进（参考框架）</option><option value="source_order">跟随原文结构</option></select></label><p id="storyFrameworkHint" class="small muted"></p><p class="small muted">框架只作为内容组织参考，要点可合并或调整顺序，不强制拆成五段；画面标题直接写具体内容。</p></div>
+        <div class="attachment-title"><label>参考资料与素材</label><span>PDF · 视频 · 图片 · TXT / MD</span></div>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="添加资料文件"><span class="upload-symbol">＋</span><div>把文件拖到这里，或 <b>选择文件</b><small>可以只提供文章／文案；无需凑齐论文和视频</small></div><input id="fileInput" type="file" multiple accept=".pdf,.mp4,.mov,.mkv,.avi,.webm,.png,.jpg,.jpeg,.webp,.txt,.md" hidden></div>
+        <div id="attachments" class="attachments"></div>
+        <details class="link-details"><summary>＋ 添加网页、PDF 或视频直链</summary><label class="sr-only" for="links">资料链接，每行一个</label><textarea id="links" rows="2" placeholder="https://arxiv.org/abs/…&#10;每行一个链接；B站、YouTube 请先下载后添加视频"></textarea></details>
+        <div class="production-options production-main"><label>内容类型<select id="contentType"><option value="auto" selected>自动判断</option><option value="paper">论文解读</option><option value="general">通用讲解</option></select></label><label>目标时长<select id="seconds"><option value="60">约 60 秒</option><option value="90" selected>约 90 秒</option><option value="120">约 2 分钟</option><option value="180">约 3 分钟</option><option value="300">约 5 分钟</option></select></label><label>成片画幅<select id="format"><option value="portrait">竖屏 9:16 · 1080p</option><option value="landscape">横屏 16:9 · 1080p</option><option value="square">方形 1:1 · 1080p</option><option value="custom">自定义尺寸</option><option value="reference">竖屏 9:16 · 720p</option></select></label><label>中文配音<select id="voice"><option value="zh-CN-YunyangNeural" selected>云扬 · 播报男声</option><option value="zh-CN-YunxiNeural">云希 · 解说男声</option><option value="zh-CN-YunjianNeural">云健 · 男声</option><option value="zh-TW-YunJheNeural">云哲 · 台湾国语男声</option><option value="zh-CN-YunxiaNeural">云夏 · 男声</option><option value="zh-CN-XiaoxiaoNeural">晓晓 · 女声</option><option value="qwen:Dylan">Dylan · 本地生成式男声</option><option value="qwen:Uncle_Fu">Uncle Fu · 本地生成式男声</option><option value="qwen:Serena">Serena · 本地生成式女声</option></select></label></div>
+        <p class="small muted">可选择固定音色和语速。Edge 音色需要联网；本地 Qwen 音色需另行安装。<a href="voice-audition.html">查看配音说明</a></p>
+        <section class="display-settings" aria-label="画面设置">
+          <div class="production-options" id="customDimensions" hidden><label>宽度（像素）<input id="customWidth" type="number" min="320" max="3840" step="2" value="1920"></label><label>高度（像素）<input id="customHeight" type="number" min="320" max="3840" step="2" value="1080"></label></div>
+          <div class="production-options"><label>画面布局<select id="layoutStyle"><option value="immersive">画面优先 · 紧凑标题字幕</option><option value="editorial">保留标题区 · 分区布局</option></select></label><label>素材显示<select id="mediaFit"><option value="contain">完整显示 · 可能留空白</option><option value="cover">铺满裁切 · 居中裁掉边缘</option></select></label></div>
+          <div class="display-toggles"><label class="checkbox"><input type="checkbox" id="minimalText" checked>少文字画面</label><label class="checkbox"><input type="checkbox" id="showSources">片中显示来源／页码</label><label class="checkbox"><input type="checkbox" id="showDisclosure">片中显示 AI 辅助说明</label></div>
+          <p class="small muted">来源记录始终保存在项目中。PDF 页面和讲解卡保留完整内容，不随铺满选项裁切。少文字模式会拦住长文字卡和素材不足时的自动补卡。</p>
+          <details id="displayPreview" open><summary>生成前预览画面占比</summary>
+            <div class="preview-tools"><label>预览素材<select id="previewSource"><option value="">选择已上传素材或任务镜头</option></select></label><button class="secondary" id="pickPreview" type="button">从电脑选一张图／视频预览</button><input type="file" id="previewFile" accept="image/*,video/*" hidden></div>
+            <div class="display-preview-grid"><div><canvas id="layoutCanvas" width="1080" height="1920" aria-label="画面占比预览"></canvas></div><div><canvas id="cropCanvas" width="400" height="225" aria-label="原素材保留范围"></canvas><p id="displaySummary" class="small"></p><p class="small muted">橙框内是保留范围，框外会被裁掉。此处预览构图与文字位置，最终字幕以实际配音为准。</p></div></div>
+          </details>
+          <button class="secondary" id="regenerateDisplay" type="button" hidden>用当前画面与配音设置重新生成</button>
+        </section>
+        <div class="research-options"><label class="checkbox"><input type="checkbox" id="deepRead" checked> 深读资料</label><label class="checkbox"><input type="checkbox" id="webResearch" checked> 联网查找来源与素材</label><label class="checkbox"><input type="checkbox" id="finalReview" checked> 生成后复查画面与叙事</label><label class="checkbox"><input type="checkbox" id="autoRepair"> 允许复查后自动修改文稿与镜头，并重新制作</label><p class="small muted">默认保留你确认的文稿，复查问题会显示供你处理。程序仍会按真实配音调整镜头时序、补足画面；这类时序处理不改写文稿。联网查找优先追踪作者来源，找到的图片和视频可在分镜中逐项查看；找不到的资料会记录缺口。</p></div>
+        <div class="composer-footer"><label class="checkbox"><input type="checkbox" id="autoRender"> 跳过人工确认，分镜自动复核通过后直接制作</label><button class="primary" id="createButton">生成文稿与分镜 <span>↗</span></button></div>
+        <p class="small muted">默认先生成可编辑文稿与分镜，等你点击“复核并生成视频”。成片生成后，再查看和导出，不会自动发布。</p>
+        <p class="privacy-note">所选模型会接收待分析的文字和抽帧。Edge 配音需要联网，本地 Qwen 需另行安装；视频在本机合成，API Key 只在当前会话使用。</p>
+      </div>
+      <aside class="guide-column"><div class="panel guide"><span class="tag">可编辑的制作流程</span><h3>从资料到成片</h3><ol><li><b>核对资料与画面</b><span>根据文案选择相关镜头。</span></li><li><b>重要数字，回到原图</b><span>图表保留表头、坐标轴与来源。</span></li><li><b>文稿和分镜都能修改</b><span>在导出前确认“说什么、看什么”。</span></li><li><b>把声音和画面对齐</b><span>字幕按真实配音时间排布。</span></li></ol></div><div class="output-hint"><span>你会得到</span><strong>MP4 成片 + 中文字幕</strong><p>以及可复用项目、文稿、素材依据、封面与发布简介。</p></div></aside></div>
+    </section>
+
+    <section id="view-editor" class="view" hidden><div class="editor-toolbar"><div><h2>文稿与分镜</h2><p id="editorSummary">添加资料后，在这里编辑文稿和镜头。</p></div><div><button class="primary" id="retryJob" hidden>继续制作</button><button class="secondary" id="editDisplay">画幅与布局</button><button id="savePlan" class="secondary" disabled>保存修改</button><button id="replan" class="secondary" disabled>按文稿重新配镜头</button><button id="renderButton" class="primary" disabled>复核并生成视频 ↗</button></div></div><div id="researchPanel"></div><div id="reviewBanner"></div><div id="storyboard" class="storyboard"><div class="empty-state"><span>▤</span><h3>尚未生成分镜</h3><p>添加文案或资料后，点击“生成文稿与分镜”。</p></div></div></section>
+
+    <section id="view-output" class="view" hidden><div class="output-grid"><div class="player-card panel"><div class="section-heading"><div><h2 id="outputTitle">成片预览</h2><p id="outputMeta">视频生成后，可在这里播放和下载。</p></div><span class="tag" id="videoTag">待生成</span></div><div class="player-stage"><video id="videoPlayer" controls preload="metadata" playsinline hidden></video><div id="videoEmpty" class="empty-state"><span>▷</span><h3>等待生成视频</h3><p>分镜确认后开始配音和合成。</p></div></div></div><aside class="panel downloads"><h3>导出与发布</h3><button class="secondary" id="outputDisplay">调整画幅与布局</button><p>成片和项目保存在本机任务目录。不会自动发布。</p><div id="finalReviewPanel"></div><button id="retryReview" class="secondary" hidden>重试成片复查</button><div class="export-options"><label>追加导出格式<select id="exportFormat"><option value="mov">MOV · H.264/AAC</option><option value="webm">WebM · VP9/Opus</option><option value="mp3">MP3 · 旁白</option><option value="wav">WAV · 无压缩旁白</option><option value="bundle">ZIP · 成片、素材与可复用项目</option></select></label><button id="exportButton" class="secondary" disabled>导出所选格式</button></div><div id="downloadLinks"><span class="muted">等待生成文件…</span></div><label for="publishTitle">发布标题</label><input id="publishTitle" readonly placeholder="AI 生成后显示"><label for="publishDescription">视频简介</label><textarea id="publishDescription" readonly rows="6" placeholder="简介与来源提示将显示在这里"></textarea><button class="secondary" id="copyPublishing">复制标题与简介</button></aside></div></section>
+
+    <section class="task-status panel" id="taskStatus" hidden><div><span class="spinner" id="taskSpinner"></span><strong id="taskTitle">准备中…</strong><button id="cancelTask" class="text-button danger">停止</button></div><div class="progress-track"><i id="progressFill"></i></div><details><summary>查看制作日志</summary><pre id="taskLogs"></pre></details></section>
+  </div>
+</main>
+<div id="toast" role="status" hidden></div>
+
+<dialog id="settingsDialog"><form id="settingsForm"><div class="modal-heading"><h2>AI 与配音设置</h2><button type="button" class="icon-button" data-close="settingsDialog" aria-label="关闭">×</button></div><p class="muted">程序会自动调用你选择的模型，无需去网页复制结果。</p><label>AI 来源<select id="backend"><option value="codex">本机 Codex（需先登录）</option><option value="api">兼容 OpenAI 的模型 API</option></select></label><div id="apiFields" hidden><label>API Base URL<input id="apiBase" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1"></label><label>支持图片理解的模型<input id="model" value="gpt-4.1"></label><label>API Key<input id="apiKey" type="password" autocomplete="off" placeholder="只在本次会话使用，不保存到磁盘"></label><button type="button" class="secondary" id="testApi">测试连接与图片理解</button><p id="apiTestMessage" class="small muted"></p></div><label>语速<select id="rate"><option value="auto">自动节奏 · 数字慢讲，叙述流畅</option><option value="-10%">稍慢 · -10%</option><option value="+0%" selected>正常 · 0%</option><option value="+10%">稍快 · +10%</option><option value="+25%">较快 · +25%</option><option value="+50%">快速 · +50%</option></select></label><p class="small muted">云扬等 Edge 音色使用在线语音服务，按上方语速生成；本地 Qwen 音色按独立配置生成，不使用此语速选项。最终视频在本机合成。</p><button class="primary" type="submit">使用这些设置</button></form></dialog>
+
+<dialog id="shotDialog" class="shot-dialog"><form id="shotForm">
+  <div class="modal-heading"><h2>调整这个镜头</h2><button type="button" class="icon-button" data-close="shotDialog" aria-label="关闭">×</button></div>
+  <label>画面来源<select id="shotSource"></select></label>
+  <div class="crop-wrap" id="cropWrap" hidden><img id="cropImage" alt="拖动选择页面或图表的完整范围"><div id="cropBox"></div></div>
+  <p class="small muted" id="cropHint" hidden>在图上拖动选择范围；保留图例、坐标轴和表头。</p>
+  <label class="checkbox" id="focusControl"><input type="checkbox" id="shotFocus"> 高亮所选区域，保留原图上下文</label>
+  <div class="production-options"><label>原片起始秒数<input id="shotIn" type="number" min="0" step="0.1"></label><label><b id="shotDurationLabel">停留权重</b><input id="shotDuration" type="number" min="1" max="20" step="0.1" aria-describedby="shotDurationHint"></label></div>
+  <p class="small muted" id="shotDurationHint">实际时长配音后确定。</p>
+  <label class="checkbox" id="keepControl"><input type="checkbox" id="shotKeepFull"> 完整播放这段演示，必要时延长本段</label>
+  <label>镜头说明<input id="shotLabel" maxlength="26"></label>
+  <label>读到哪里切入<input id="shotCue" placeholder="首镜头留空；其他镜头填写本段文稿中的唯一短语"></label>
+  <label id="cardTextLabel">讲解卡片文字<textarea id="shotCardText" maxlength="180" rows="4"></textarea></label>
+  <button type="submit" class="primary">保存这个镜头</button>
+</form></dialog>
+<script src="/display.js"></script><script src="/preview.js"></script><script src="/app.js"></script>
+</body></html>

@@ -1,0 +1,6 @@
+{
+  "name": "视频工坊",
+  "default_voice": "zh-CN-YunyangNeural",
+  "default_rate": "+0%",
+  "port": 8780
+}

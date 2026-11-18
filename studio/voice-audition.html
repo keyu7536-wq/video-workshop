@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频工坊 · 配音说明</title>
+<style>body{margin:0;background:#10171e;color:#eef3f5;font:17px/1.8 system-ui,"Microsoft YaHei",sans-serif}main{max-width:780px;margin:48px auto;padding:0 24px}h1{font-size:30px}h2{font-size:22px}section{background:#19232e;border:1px solid #33424f;border-radius:16px;padding:20px 24px;margin:20px 0}a{color:#75dcca}td,th{text-align:left;padding:10px 18px 10px 0;border-bottom:1px solid #33424f}small{color:#b5c2cb}</style></head>
+<body><main><a href="/">← 返回工作台</a><h1>选择配音与语速</h1>
+<p>在“添加资料”页选择音色，在“AI 与配音设置”中选择语速。打开已有任务时，会恢复该任务的配音设置。</p>
+<section><h2>在线固定音色</h2><table><thead><tr><th>音色</th><th>语言与类型</th></tr></thead><tbody><tr><td>云扬</td><td>普通话播报男声</td></tr><tr><td>云希</td><td>普通话解说男声</td></tr><tr><td>云健</td><td>普通话男声</td></tr><tr><td>云哲</td><td>台湾国语男声</td></tr><tr><td>云夏</td><td>普通话男声</td></tr><tr><td>晓晓</td><td>普通话女声</td></tr></tbody></table><p>这些音色使用 Microsoft Edge TTS，需要联网；语速可选正常、加快、减慢或自动节奏。</p></section>
+<section><h2>本地生成式配音</h2><p>Qwen 音色需要安装可选的配音环境与模型。它使用独立生成配置，不使用 Edge 的百分比语速选项。部署步骤见项目文档。</p></section>
+<section><h2>先制作短片段</h2><p>首次选择音色时，可输入一小段文案生成短任务，再播放导出的旁白或视频比较听感。确定后，在正式任务中使用同一音色和语速。</p></section>
+</main><script>fetch('/api/app-config').then(r=>r.ok?r.json():{}).then(c=>{document.title=(c.name||'视频工坊')+' · 配音说明'}).catch(()=>{});</script></body></html>

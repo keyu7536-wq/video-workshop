@@ -1,0 +1,49 @@
+name: 问题反馈
+description: 报告可以复现的安装、资料读取、分镜、配音或导出问题。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请使用可公开的最小示例。不要粘贴 API Key、登录凭据、私人文稿或完整任务包。
+        如果涉及安全问题，请先阅读 SECURITY.md。
+  - type: input
+    id: version
+    attributes:
+      label: 视频工坊版本
+      placeholder: 版本号或 commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、Python、浏览器，以及所选模型和配音方式；不要填写密钥。
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 出问题的步骤
+      options:
+        - 安装与启动
+        - 资料读取与素材下载
+        - 文稿与分镜
+        - 配音与合成
+        - 预览与导出
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 描述输入、点击顺序、预期结果和实际结果。可附公开来源链接或自造示例。
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: 脱敏后的错误信息
+      description: 只保留定位所需的错误片段，删除私人路径和内容。
+      render: text
