@@ -7,9 +7,12 @@ import venv
 import os
 
 def main():
+    root=Path(__file__).resolve().parents[1]
+    sys.path.insert(0,str(root))
+    from studio_console import configure_console
+    configure_console()
     if sys.version_info < (3,11):
         raise RuntimeError('Python 3.11 or newer is required; Python 3.12 is recommended.')
-    root=Path(__file__).resolve().parents[1]
     env=root/'.venv'
     python=env/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
     if not python.is_file():venv.EnvBuilder(with_pip=True).create(env)

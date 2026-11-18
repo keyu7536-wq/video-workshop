@@ -22,7 +22,7 @@ class ShotPreviewTests(unittest.TestCase):
         from playwright.sync_api import sync_playwright
         from make_video import ffmpeg_path
         cls.resources=contextlib.ExitStack();cls.addClassCleanup(cls.resources.close)
-        cls.root=Path(cls.resources.enter_context(tempfile.TemporaryDirectory()))
+        cls.root=Path(cls.resources.enter_context(tempfile.TemporaryDirectory())).resolve()
         (cls.root/'jobs').mkdir();(cls.root/'uploads').mkdir()
         cls.resources.enter_context(patch.object(server,'ROOT',cls.root))
         cls.resources.enter_context(patch.object(engine,'ROOT',cls.root))

@@ -26,7 +26,7 @@ def make_pdf(path, count):
 class DocumentTests(unittest.TestCase):
     def test_long_document_preserves_all_text_and_samples_full_extent(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder); source = root / 'long.pdf'; analysis = root / 'analysis'
+            root = Path(folder).resolve(); source = root / 'long.pdf'; analysis = root / 'analysis'
             make_pdf(source, 135)
             pages, images = inspect_document(source, analysis)
             self.assertEqual(len(pages), 135)

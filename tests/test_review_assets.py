@@ -16,7 +16,7 @@ from studio_review_assets import prepare_review_assets
 class ReviewAssetsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.job = Path(self.temp.name)
+        self.job = Path(self.temp.name).resolve()
         (self.job / 'analysis').mkdir()
         self.pdf = self.job / 'paper.pdf'
         with pymupdf.open() as document:

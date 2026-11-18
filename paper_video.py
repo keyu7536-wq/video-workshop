@@ -18,12 +18,13 @@ import time
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 import uuid
+from studio_console import configure_console, console_print
 
 ROOT = Path(__file__).resolve().parent
 
 
 def log(text):
-    print(text, flush=True)
+    console_print(text)
 
 
 def save_json(path, value):
@@ -580,9 +581,7 @@ def pipeline(args):
 
 
 def main():
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    configure_console()
     parser = argparse.ArgumentParser(description='输入论文 PDF / 链接和演示视频，通过 Codex 或模型 API 自动生成中文讲解视频。')
     parser.add_argument('--paper', help='本地 PDF、PDF 直链或 arXiv abs 链接')
     parser.add_argument('--video', help='本地视频、视频直链或含唯一 video/source 标签的网页')

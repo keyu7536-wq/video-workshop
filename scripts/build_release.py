@@ -25,7 +25,7 @@ REQUIRED = (
     'requirements.txt', 'requirements-paper.txt', 'requirements-dev.txt',
     'requirements-voice.txt', 'make_video.py', 'paper_video.py', 'model_api.py',
     'local_voice_worker.py', 'studio_crop.py', 'studio_delivery.py', 'studio_diagrams.py',
-    'studio_display.py', 'studio_engine.py', 'studio_local_voice.py',
+    'studio_display.py', 'studio_engine.py', 'studio_local_voice.py', 'studio_console.py',
     'studio_render.py', 'studio_research.py', 'studio_revision.py',
     'studio_server.py', 'studio_voice.py', 'studio_story.py', 'studio_documents.py', 'studio_context.py', 'studio_process.py', 'studio_recovery.py',
     'studio_network.py', 'studio_search.py', 'studio_plan_repair.py', 'studio_repository.py', 'studio_review_assets.py', 'studio_media.py',
@@ -50,7 +50,7 @@ REQUIRED = (
     'tests/test_paper_triage.py', 'tests/test_network_retry.py', 'tests/test_public_search.py', 'tests/test_plan_repair.py', 'tests/test_shot_preview.py',
     'tests/test_project_refresh.py',
     'tests/test_visual_policy_review.py', 'tests/test_repository_fallback.py', 'tests/test_review_feedback.py', 'tests/test_review_assets.py', 'tests/test_plan_review_context.py',
-    'tests/test_author_media.py', 'tests/test_audio_playback_ui.py', 'tests/test_backend_isolation.py',
+    'tests/test_author_media.py', 'tests/test_audio_playback_ui.py', 'tests/test_backend_isolation.py', 'tests/test_console_output.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',
@@ -154,8 +154,8 @@ def main():
     args=parser.parse_args();root=args.root.resolve()
     if args.check:
         files=selected_files(root);findings=inspect(root,files)
-        print(json.dumps({'files':len(files),'passed':not findings,'findings':findings},ensure_ascii=False,indent=2))
+        print(json.dumps({'files':len(files),'passed':not findings,'findings':findings},ensure_ascii=True,indent=2))
         raise SystemExit(1 if findings else 0)
-    print(json.dumps(build(root,args.output,args.version),ensure_ascii=False,indent=2))
+    print(json.dumps(build(root,args.output,args.version),ensure_ascii=True,indent=2))
 
 if __name__=='__main__':main()

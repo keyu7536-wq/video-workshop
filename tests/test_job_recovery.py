@@ -41,7 +41,7 @@ def plan():
 class RecoveryHTTPTests(unittest.TestCase):
     def setUp(self):
         self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
-        self.root=Path(self.temporary.name);(self.root/'jobs').mkdir()
+        self.root=Path(self.temporary.name).resolve();(self.root/'jobs').mkdir()
         root_patch=patch.object(server,'ROOT',self.root);root_patch.start();self.addCleanup(root_patch.stop)
         self.http=server.StudioHTTPServer(('127.0.0.1',0),server.Handler)
         self.http.manager=server.Manager();self.http.manager.start=Mock()

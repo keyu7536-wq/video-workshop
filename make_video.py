@@ -21,13 +21,14 @@ import subprocess
 import sys
 import time
 import wave
+from studio_console import configure_console, console_print
 
 ROOT = Path(__file__).resolve().parent
 RATE_HZ = 24000
 
 
 def log(message):
-    print(message, flush=True)
+    console_print(message)
 
 
 def run(args, **kwargs):
@@ -523,6 +524,7 @@ async def build(args):
 
 
 def main():
+    configure_console()
     parser = argparse.ArgumentParser(description="视频工坊：配音、裁片、插图、字幕与合成")
     parser.add_argument("--project", default=str(ROOT / "project.json"))
     parser.add_argument("--voice", help="覆盖项目中的 Edge TTS 音色")

@@ -1,6 +1,7 @@
 """Launch the isolated local speech environment and consume verified cached audio."""
 from pathlib import Path
 import json,os,subprocess
+from studio_console import console_print
 ROOT=Path(__file__).resolve().parent
 
 def prepare(project):
@@ -12,7 +13,7 @@ def prepare(project):
         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     with (project.parent/'voice_worker.log').open('w',encoding='utf-8') as log:
         for line in process.stdout:
-            log.write(line);log.flush();print(line,end='',flush=True)
+            log.write(line);log.flush();console_print(line,end='')
     if process.wait():raise RuntimeError('本地配音失败，详情见 '+str(project.parent/'voice_worker.log'))
     manifest=json.loads((project.parent/'audio_cache/qwen/manifest.json').read_text(encoding='utf-8'))
     return {item['id']:item for item in manifest['blocks']}

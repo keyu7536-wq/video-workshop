@@ -630,7 +630,8 @@ def new_job(request):
 
 
 def main():
-    if hasattr(sys.stdout,'reconfigure'): sys.stdout.reconfigure(encoding='utf-8',errors='replace')
+    from studio_console import configure_console
+    configure_console()
     parser=argparse.ArgumentParser(); parser.add_argument('--job',required=True); parser.add_argument('--action',choices=('prepare','resume','render','review','export'),default='prepare')
     args=parser.parse_args()
     try: execute(Path(args.job).resolve(),args.action)

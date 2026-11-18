@@ -18,7 +18,7 @@ class JobErrorUITests(unittest.TestCase):
         from playwright.sync_api import sync_playwright
         cls.resources=contextlib.ExitStack()
         cls.addClassCleanup(cls.resources.close)
-        cls.root=Path(cls.resources.enter_context(tempfile.TemporaryDirectory()))
+        cls.root=Path(cls.resources.enter_context(tempfile.TemporaryDirectory())).resolve()
         (cls.root/'jobs').mkdir()
         cls.resources.enter_context(patch.object(server,'ROOT',cls.root))
         cls.http=server.StudioHTTPServer(('127.0.0.1',0),server.Handler)

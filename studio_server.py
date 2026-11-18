@@ -22,6 +22,7 @@ from urllib.request import urlopen
 import paper_video as pv
 import studio_engine as engine
 from app_config import APP_ID,VERSION,PROTOCOL_VERSION,load_config
+from studio_console import configure_console,console_print
 
 ROOT=pv.ROOT
 WEB=ROOT/'studio'
@@ -508,7 +509,7 @@ def open_workbench(url):
         if webbrowser.open(url):return True
     except Exception:
         pass
-    print('服务可用，但未能自动打开浏览器。请在浏览器地址栏输入：'+url,flush=True)
+    console_print('服务可用，但未能自动打开浏览器。请在浏览器地址栏输入：'+url)
     return False
 
 
@@ -522,6 +523,7 @@ def compatible_server(existing):
 
 
 def main():
+    configure_console()
     config=load_config(); validate_settings({'voice':config['default_voice'],'rate':config['default_rate']})
     parser=argparse.ArgumentParser(description=config['name']); parser.add_argument('--port',type=int,default=config['port']); parser.add_argument('--no-browser',action='store_true'); args=parser.parse_args()
     url=f'http://127.0.0.1:{args.port}'
@@ -529,7 +531,7 @@ def main():
         try:
             with urlopen(url+'/api/health',timeout=2) as response:existing=json.load(response)
             if compatible_server(existing):
-                print('工作台已经运行：'+url,flush=True)
+                console_print('工作台已经运行：'+url)
                 if not args.no_browser:open_workbench(url)
                 return
         except (OSError,ValueError):pass
@@ -540,12 +542,12 @@ def main():
             with urlopen(url+'/api/health',timeout=2) as response:existing=json.load(response)
         except Exception:raise RuntimeError('端口被其他程序占用，请用 --port 指定另一个端口。') from None
         if not compatible_server(existing):raise RuntimeError('端口被其他程序占用，请用 --port 指定另一个端口。')
-        print('工作台已经运行：'+url,flush=True)
+        console_print('工作台已经运行：'+url)
         if not args.no_browser:open_workbench(url)
         return
     server.manager=Manager()
     url=f'http://127.0.0.1:{server.server_port}'
-    print(config['name']+' 已启动：'+url,flush=True)
+    console_print(config['name']+' 已启动：'+url)
     if not args.no_browser: threading.Timer(.5,lambda:open_workbench(url)).start()
     try: server.serve_forever()
     except KeyboardInterrupt: pass
