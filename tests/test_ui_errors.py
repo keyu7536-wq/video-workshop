@@ -113,10 +113,22 @@ class JobErrorUITests(unittest.TestCase):
         self.errors=[];self.page.on('pageerror',lambda error:self.errors.append(str(error)))
         self.page.goto(self.base,wait_until='networkidle')
 
-    def open_job(self,name):
-        self.page.locator(f'[data-job="{name}"]').click()
+    def open_job(self,name,expected_budget=None):
+        # Reopening the same job leaves both selectors below present while its
+        # GET is in flight. Await this response, then the expected snapshot;
+        # request completion alone need not mean response.json() has rendered.
+        with self.page.expect_response(lambda response:response.url==self.base+'/api/job?id='+name
+                                       and response.request.method=='GET') as response:
+            self.page.locator(f'[data-job="{name}"]').click()
+        self.assertEqual(response.value.status,200)
+        response.value.finished()
+        if expected_budget is not None:
+            self.wait_for_budget(expected_budget)
         self.page.wait_for_selector(f'[data-job="{name}"].selected')
         self.page.wait_for_selector('#view-editor:not([hidden])')
+
+    def wait_for_budget(self,budget):
+        self.page.wait_for_function('expected => JSON.stringify(state.job?.repair_budget) === JSON.stringify(expected)',arg=budget)
 
     def test_failed_job_without_plan_keeps_the_actual_error_visible_after_reopen(self):
         self.open_job('missing_plan')
@@ -201,16 +213,46 @@ class JobErrorUITests(unittest.TestCase):
                ({'limit':3,'used':3,'remaining':0,'pending_review':False,'stale':True},False,'输入已修改')]
         for budget,disabled,message in cases:
             with self.subTest(budget=budget),patch.object(server,'snapshot',side_effect=lambda job:original(job)|{'repair_budget':budget}):
-                self.open_job('plan_blocked')
+                self.open_job('plan_blocked',expected_budget=budget)
                 self.assertEqual(self.page.locator('#repairPlanButton').is_disabled(),disabled)
                 self.assertIn('已用 3 / 3 次，剩余 0 次',self.page.locator('#repairBudgetStatus').inner_text())
                 self.assertIn(message,self.page.locator('#repairBudgetStatus').inner_text())
                 self.assertFalse(self.page.locator('#autoRepair').is_checked())
         invalid={'limit':3,'used':None,'remaining':None,'pending_review':False,'stale':True,'error':'计数记录无效'}
         with patch.object(server,'snapshot',side_effect=lambda job:original(job)|{'repair_budget':invalid}):
-            self.open_job('plan_blocked')
+            self.open_job('plan_blocked',expected_budget=invalid)
             self.assertIn('无法读取自动返修次数',self.page.locator('#repairBudgetStatus').inner_text())
             self.assertNotIn('输入已修改',self.page.locator('#repairBudgetStatus').inner_text())
+        self.assertEqual(self.errors,[])
+
+    def test_same_job_budget_refresh_waits_for_controlled_response(self):
+        original=server.snapshot
+        old={'limit':3,'used':3,'remaining':0,'pending_review':False,'stale':False}
+        new=old|{'pending_review':True}
+        with patch.object(server,'snapshot',side_effect=lambda job:original(job)|{'repair_budget':old}):
+            self.open_job('plan_blocked',expected_budget=old)
+        held=[]
+        pattern='**/api/job?id=plan_blocked'
+        self.page.route(pattern,lambda route:held.append(route))
+        try:
+            # Hold the request until assertions explicitly release it. This is
+            # the precise CI race, independent of machine speed or arbitrary
+            # sleeps: selected/editor are old, not a new-load completion signal.
+            with self.page.expect_request(self.base+'/api/job?id=plan_blocked'):
+                self.page.locator('[data-job="plan_blocked"]').click()
+            self.assertEqual(len(held),1)
+            self.assertTrue(self.page.locator('[data-job="plan_blocked"].selected').is_visible())
+            self.assertTrue(self.page.locator('#view-editor').is_visible())
+            self.assertEqual(self.page.evaluate('state.job.repair_budget'),old)
+            self.assertTrue(self.page.locator('#repairPlanButton').is_disabled())
+            held.pop().fulfill(json=original(self.root/'jobs/plan_blocked')|{'repair_budget':new})
+            self.wait_for_budget(new)
+            self.assertFalse(self.page.locator('#repairPlanButton').is_disabled())
+            self.assertIn('只复核同一候选',self.page.locator('#repairBudgetStatus').inner_text())
+            self.assertFalse(self.page.locator('#autoRepair').is_checked())
+        finally:
+            for route in held:route.abort()
+            self.page.unroute(pattern)
         self.assertEqual(self.errors,[])
 
     def test_manual_shot_edit_saves_crop_and_enables_review_without_auto_repair(self):
