@@ -123,6 +123,36 @@ function attachClipPlayer(video,button,hint){
 }
 
 let sourceClip,finalClip;
+let columnPreviewSequence=0;
+function columnCropValue(){
+  if(!$('columnCropEnabled').checked)return null;
+  try{return JSON.parse($('columnCropSpec').value);}catch(_){throw Error('请填写有效的列区间 JSON，例如 y 和 columns 两个字段。');}
+}
+function updateColumnCropUI(){
+  const source=(state.job?.sources||[]).find(item=>item.id===$('shotSource').value);
+  const image=['page','image'].includes(source?.type),enabled=image&&$('columnCropEnabled').checked;
+  $('columnCropControls').hidden=!image;$('columnCropFields').hidden=!enabled;
+  $('shotFocus').disabled=enabled;$('cropBox').hidden=enabled;
+  if(enabled)$('shotFocus').checked=false;
+  if(!enabled){columnPreviewSequence++;$('columnCropPreview').hidden=true;$('columnCropHint').textContent='';}
+}
+async function updateColumnCropPreview(){
+  const sequence=++columnPreviewSequence;
+  if(!$('columnCropEnabled').checked)return null;
+  $('columnCropPreview').hidden=true;$('columnCropHint').textContent='正在按原始比例生成预览…';
+  try{
+    const spec=columnCropValue();if(!spec)throw Error('请填写 y 和 columns 列区间，不能使用 null。');
+    const query=new URLSearchParams({job:state.job.id,id:$('shotSource').value,column_crop:JSON.stringify(spec),display:JSON.stringify(displaySettings())});
+    const result=await api('/api/column-preview?'+query);
+    if(sequence!==columnPreviewSequence)return null;
+    $('columnCropPreview').src=result.url;$('columnCropPreview').hidden=false;
+    $('columnCropHint').textContent='同尺度拼接预览 · 成片会按当前画幅等比容纳此图，不含字幕。请与上方原图核对条件和数据。';
+    return result.provenance.column_crop;
+  }catch(error){
+    if(sequence===columnPreviewSequence)$('columnCropHint').textContent=error.message;
+    throw error;
+  }
+}
 function initializeShotPreviews(){
   $('shotSource').closest('label').insertAdjacentHTML('afterend',`<section id="sourceClipPanel" class="clip-preview" hidden>
     <video id="shotVideoPreview" controls preload="metadata" playsinline muted></video>
@@ -146,9 +176,14 @@ function initializeShotPreviews(){
   $('shotDialog').addEventListener('close',()=>sourceClip.stop());
   $('segmentDialog').addEventListener('close',()=>finalClip.stop());
   for(const id of ['shotIn','shotDuration','shotCardText'])$(id).addEventListener('input',updateShotPreview);
+  $('columnCropEnabled').onchange=()=>{updateColumnCropUI();if($('columnCropEnabled').checked)updateColumnCropPreview().catch(()=>{});};
+  $('columnCropSpec').oninput=()=>{columnPreviewSequence++;$('columnCropPreview').hidden=true;$('columnCropHint').textContent='列区间已修改，点击更新预览；保存镜头时也会校验。';};
+  $('refreshColumnPreview').onclick=()=>updateColumnCropPreview().catch(()=>{});
+  $('shotDialog').addEventListener('close',()=>{columnPreviewSequence++;});
 }
 
 function updateShotPreview(){
+  updateColumnCropUI();
   const source=(state.job?.sources||[]).find(item=>item.id===$('shotSource').value);
   const isVideo=source?.type==='video';$('sourceClipPanel').hidden=!isVideo;
   $('shotDurationLabel').textContent=isVideo?'取片秒数':'停留权重';

@@ -43,7 +43,7 @@
           </details>
           <button class="secondary" id="regenerateDisplay" type="button" hidden>用当前画面与配音设置重新生成</button>
         </section>
-        <div class="research-options"><label class="checkbox"><input type="checkbox" id="deepRead" checked> 深读资料</label><label class="checkbox"><input type="checkbox" id="webResearch" checked> 联网查找来源与素材</label><label class="checkbox"><input type="checkbox" id="finalReview" checked> 生成后复查画面与叙事</label><label class="checkbox"><input type="checkbox" id="autoRepair"> 允许复查后自动修改文稿与镜头，并重新制作</label><p class="small muted">默认保留你确认的文稿，复查问题会显示供你处理。程序仍会按真实配音调整镜头时序、补足画面；这类时序处理不改写文稿。联网查找优先追踪作者来源，找到的图片和视频可在分镜中逐项查看；找不到的资料会记录缺口。</p></div>
+        <div class="research-options"><label class="checkbox"><input type="checkbox" id="deepRead" checked> 深读资料</label><label class="checkbox"><input type="checkbox" id="webResearch" checked> 联网查找来源与素材</label><label class="checkbox"><input type="checkbox" id="finalReview" checked> 生成后复查画面与叙事</label><label class="checkbox"><input type="checkbox" id="autoRepair"> 允许自动返修文稿与镜头（全流程最多 3 次）</label><p class="small muted">默认保留你确认的文稿，复查问题会显示供你处理。程序仍会按真实配音调整镜头时序、补足画面；这类时序处理不改写文稿。联网查找优先追踪作者来源，找到的图片和视频可在分镜中逐项查看；找不到的资料会记录缺口。</p></div>
         <div class="composer-footer"><label class="checkbox"><input type="checkbox" id="autoRender"> 跳过人工确认，分镜自动复核通过后直接制作</label><button class="primary" id="createButton">生成文稿与分镜 <span>↗</span></button></div>
         <p class="small muted">默认先生成可编辑文稿与分镜，等你点击“复核并生成视频”。成片生成后，再查看和导出，不会自动发布。</p>
         <p class="privacy-note">所选模型会接收待分析的文字和抽帧。Edge 配音需要联网，本地 Qwen 需另行安装；视频在本机合成，API Key 只在当前会话使用。</p>
@@ -68,6 +68,16 @@
   <div class="crop-wrap" id="cropWrap" hidden><img id="cropImage" alt="拖动选择页面或图表的完整范围"><div id="cropBox"></div></div>
   <p class="small muted" id="cropHint" hidden>在图上拖动选择范围；保留图例、坐标轴和表头。</p>
   <label class="checkbox" id="focusControl"><input type="checkbox" id="shotFocus"> 高亮所选区域，保留原图上下文</label>
+  <section id="columnCropControls" class="column-crop-controls" hidden>
+    <label class="checkbox"><input type="checkbox" id="columnCropEnabled"> 按列拼接图表局部</label>
+    <div id="columnCropFields" hidden>
+      <label>原图中的列区间<textarea id="columnCropSpec" rows="4" spellcheck="false" placeholder='{"y":[0.1,0.9],"columns":[[0.05,0.2],[0.6,0.95]]}'></textarea></label>
+      <p class="small muted">y 是共同的上、下边界；columns 是从左到右的 2～6 个列区间。坐标均为原图的 0～1 比例，列不能重叠。保留行条件、表头、轴和必要图例；所有列保持同一比例，虚线表示省略的区域。启用后不同时裁切或加高亮框。</p>
+      <button type="button" class="secondary" id="refreshColumnPreview">更新拼接预览</button>
+      <p id="columnCropHint" class="small" role="status"></p>
+      <img id="columnCropPreview" alt="按原始比例拼接的列区间预览，虚线标记省略区域" hidden>
+    </div>
+  </section>
   <div class="production-options"><label>原片起始秒数<input id="shotIn" type="number" min="0" step="0.1"></label><label><b id="shotDurationLabel">停留权重</b><input id="shotDuration" type="number" min="1" max="20" step="0.1" aria-describedby="shotDurationHint"></label></div>
   <p class="small muted" id="shotDurationHint">实际时长配音后确定。</p>
   <label class="checkbox" id="keepControl"><input type="checkbox" id="shotKeepFull"> 完整播放这段演示，必要时延长本段</label>

@@ -52,6 +52,60 @@ def setup_job(root,request=None,review=None):
 
 
 class PlanRepairTests(unittest.TestCase):
+    def test_three_rounds_use_latest_concrete_feedback_and_accept_only_final(self):
+        with tempfile.TemporaryDirectory() as folder:
+            job,request,original,review=setup_job(folder,{'script':TEXT})
+            candidates=[]
+            for number in range(3):
+                candidate=fixed();candidate['blocks'][0]['shots'][0]['label']=f'修订{number+1}'
+                candidates.append(candidate)
+            issues=[copy.deepcopy(BLOCKED),copy.deepcopy(BLOCKED),copy.deepcopy(PASSED)]
+            issues[0]['issues'][0]['reason']='第一轮：条件标签仍不对应'
+            issues[1]['issues'][0]['reason']='第二轮：对比对象需保留'
+            prompts=[]
+            def generate(prompt,*args):
+                prompts.append(prompt)
+                self.assertEqual(pv.load_json(job/'analysis/studio_plan.json'),original)
+                return copy.deepcopy(candidates[len(prompts)-1])
+            with patch('studio_engine.call_ai',side_effect=generate), \
+                 patch('studio_engine.review_plan',side_effect=issues) as recheck,patch('paper_video.log'):
+                result,checked=repair_plan_once(job,original,SOURCES,request,review)
+            self.assertEqual(result,candidates[2]);self.assertTrue(checked['ready'])
+            self.assertEqual(recheck.call_count,3)
+            self.assertIn(issues[0]['issues'][0]['reason'],prompts[1])
+            self.assertIn(issues[1]['issues'][0]['reason'],prompts[2])
+            self.assertIn('修订2',prompts[2])
+            state=pv.load_json(job/'analysis/repair_budget.json')
+            self.assertEqual([item['status'] for item in state['attempts']],['rejected','rejected','accepted'])
+            self.assertTrue(all((Path(item['folder'])/'candidate_review.json').is_file() for item in state['attempts']))
+
+    def test_invalid_candidate_feedback_can_be_corrected_without_changing_script(self):
+        with tempfile.TemporaryDirectory() as folder:
+            job,request,original,review=setup_job(folder,{'script':TEXT})
+            invalid=fixed();invalid['blocks'][0]['narration']='Unauthorized replacement'
+            with patch('studio_engine.call_ai',side_effect=[invalid,fixed()]) as generate, \
+                 patch('studio_engine.review_plan',return_value=copy.deepcopy(PASSED)) as recheck,patch('paper_video.log'):
+                result,checked=repair_plan_once(job,original,SOURCES,request,review)
+            self.assertEqual(generate.call_count,2);recheck.assert_called_once()
+            self.assertEqual(result['blocks'][0]['narration'],TEXT)
+            self.assertIn('Unauthorized replacement',generate.call_args_list[1].args[0])
+            state=pv.load_json(job/'analysis/repair_budget.json')
+            self.assertEqual([item['status'] for item in state['attempts']],['invalid_candidate','accepted'])
+
+    def test_prior_schema_and_timing_attempts_leave_only_one_plan_generation(self):
+        from studio_repair_budget import reserve_attempt,finish_attempt
+        with tempfile.TemporaryDirectory() as folder:
+            job,request,original,review=setup_job(folder)
+            for stage in ('schema','timing'):
+                ticket=reserve_attempt(job,original,SOURCES,request,stage)
+                finish_attempt(job,ticket,'rejected')
+            with patch('studio_engine.call_ai',return_value=fixed()) as generate, \
+                 patch('studio_engine.review_plan',return_value=copy.deepcopy(BLOCKED)) as recheck,patch('paper_video.log'):
+                result,_=repair_plan_once(job,original,SOURCES,request,review)
+                repair_plan_once(job,original,SOURCES,request,review)
+            generate.assert_called_once();recheck.assert_called_once();self.assertEqual(result,original)
+            self.assertEqual(pv.load_json(job/'analysis/repair_budget.json')['used'],3)
+
     def test_prepare_repairs_rejected_initial_plan_before_export(self):
         with tempfile.TemporaryDirectory() as folder:
             job,request,_,_=setup_job(folder)
@@ -98,13 +152,15 @@ class PlanRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             job,request,original,review=setup_job(folder)
             before=[(job/path).read_bytes() for path in ('analysis/studio_plan.json','review.json')]
-            with patch('studio_engine.call_ai',side_effect=[fixed(),copy.deepcopy(BLOCKED)]) as ai,patch('paper_video.log'):
+            with patch('studio_engine.call_ai',return_value=fixed()) as ai, \
+                 patch('studio_engine.review_plan',return_value=copy.deepcopy(BLOCKED)) as recheck,patch('paper_video.log'):
                 returned,checked=repair_plan_once(job,original,SOURCES,request,review)
                 repair_plan_once(job,original,SOURCES,request,review)
-            self.assertEqual(ai.call_count,2)
+            self.assertEqual(ai.call_count,3);self.assertEqual(recheck.call_count,1)
             self.assertEqual(returned,original);self.assertEqual(checked,review)
             self.assertEqual(before,[(job/path).read_bytes() for path in ('analysis/studio_plan.json','review.json')])
-            folder=next((job/'analysis/plan_repair').iterdir())
+            state=pv.load_json(job/'analysis/repair_budget.json')
+            folder=Path(state['attempts'][0]['folder'])
             self.assertTrue((folder/'candidate.json').is_file())
             self.assertTrue((folder/'candidate_review.json').is_file())
             self.assertEqual(pv.load_json(folder/'attempt.json')['status'],'rejected')
@@ -133,7 +189,7 @@ class PlanRepairTests(unittest.TestCase):
                 with patch('studio_engine.call_ai',return_value=candidate) as ai, \
                      patch('studio_engine.review_plan') as recheck,patch('paper_video.log'):
                     result,_=repair_plan_once(job,original,SOURCES,request,review)
-                self.assertEqual(result,original);ai.assert_called_once();recheck.assert_not_called()
+                self.assertEqual(result,original);self.assertEqual(ai.call_count,3);recheck.assert_not_called()
                 self.assertEqual((job/'review.json').read_bytes(),before)
                 self.assertEqual(pv.load_json(job/'analysis/plan_repair_latest.json')['status'],'invalid_candidate')
 
@@ -149,10 +205,12 @@ class PlanRepairTests(unittest.TestCase):
             self.assertNotEqual(base,repair_fingerprint(changed_plan,changed_sources,changed_request))
         with tempfile.TemporaryDirectory() as folder:
             job,request,original,review=setup_job(folder)
-            with patch('studio_engine.call_ai',side_effect=[fixed(),copy.deepcopy(BLOCKED),fixed(),copy.deepcopy(PASSED)]) as ai,patch('paper_video.log'):
+            with patch('studio_engine.call_ai',return_value=fixed()) as ai, \
+                 patch('studio_engine.review_plan',side_effect=[copy.deepcopy(BLOCKED),copy.deepcopy(PASSED)]) as recheck,patch('paper_video.log'):
                 repair_plan_once(job,original,SOURCES,request,review)
                 result,_=repair_plan_once(job,original,SOURCES,request|{'brief':'更换关注点。'},review)
             self.assertEqual(ai.call_count,4);self.assertEqual(result,fixed())
+            self.assertEqual(recheck.call_count,2)
 
     def test_candidate_review_outage_restores_original_review_and_keeps_candidate(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -162,11 +220,11 @@ class PlanRepairTests(unittest.TestCase):
                 result,checked=repair_plan_once(job,original,SOURCES,request,review)
             self.assertEqual(result,original);self.assertEqual(checked,review)
             self.assertEqual((job/'review.json').read_bytes(),before)
-            folder=next((job/'analysis/plan_repair').iterdir())
+            folder=Path(pv.load_json(job/'analysis/plan_repair_latest.json')['folder'])
             self.assertTrue((folder/'candidate.json').is_file())
             self.assertIn('unavailable',pv.load_json(folder/'attempt.json')['reason'])
 
-    def test_constraint_policy_change_allows_one_new_attempt_without_global_story_invalidation(self):
+    def test_constraint_policy_change_does_not_reset_exhausted_input_budget(self):
         import studio_plan_repair as repair
         policy=repair.REPAIR_POLICY_VERSION
         with tempfile.TemporaryDirectory() as folder:
@@ -176,7 +234,7 @@ class PlanRepairTests(unittest.TestCase):
             with patch('studio_engine.call_ai',return_value=invalid) as first,patch('paper_video.log'):
                 repair_plan_once(job,original,SOURCES,request,review)
                 repair_plan_once(job,original,SOURCES,request,review)
-            first.assert_called_once()
+            self.assertEqual(first.call_count,3)
             self.assertEqual(pv.load_json(job/'analysis/plan_repair_latest.json')['status'],'invalid_candidate')
             with patch.object(repair,'REPAIR_POLICY_VERSION',policy+1):
                 self.assertNotEqual(repair_fingerprint(original,SOURCES,request),initial)
@@ -185,11 +243,11 @@ class PlanRepairTests(unittest.TestCase):
                      patch('paper_video.log'):
                     repair_plan_once(job,original,SOURCES,request,review)
                     repair_plan_once(job,original,SOURCES,request,review)
-                generate.assert_called_once();recheck.assert_called_once()
-                self.assertEqual(pv.load_json(job/'analysis/plan_repair_latest.json')['repair_policy_version'],policy+1)
+                generate.assert_not_called();recheck.assert_not_called()
+                self.assertEqual(pv.load_json(job/'analysis/repair_budget.json')['used'],3)
             self.assertEqual(repair_fingerprint(original,SOURCES,request),initial)
             self.assertEqual(pv.load_json(job/'review.json')['_story_policy_version'],STORY_POLICY_VERSION)
-            self.assertEqual(len(list((job/'analysis/plan_repair').iterdir())),2)
+            self.assertEqual(len(pv.load_json(job/'analysis/repair_budget.json')['attempts']),3)
 
     def test_external_review_outages_retry_only_same_candidate_on_later_click(self):
         for outcome in (RuntimeError('review service unavailable'),
@@ -226,15 +284,15 @@ class PlanRepairTests(unittest.TestCase):
                 with patch('studio_engine.call_ai',return_value=fixed()), \
                      patch('studio_engine.review_plan',side_effect=RuntimeError('service down')),patch('paper_video.log'):
                     repair_plan_once(job,original,SOURCES,request,review)
-                folder=next((job/'analysis/plan_repair').iterdir())
+                folder=Path(pv.load_json(job/'analysis/plan_repair_latest.json')['folder'])
                 if tamper:
                     candidate=fixed();candidate['summary']='Artifact modified after validation'
                     pv.save_json(folder/'candidate.json',candidate)
-                with patch('studio_engine.call_ai') as generate, \
+                with patch('studio_engine.call_ai',return_value=fixed()) as generate, \
                      patch('studio_engine.review_plan',return_value=copy.deepcopy(BLOCKED)) as recheck,patch('paper_video.log'):
                     repair_plan_once(job,original,SOURCES,request,review)
                     repair_plan_once(job,original,SOURCES,request,review)
-                generate.assert_not_called()
+                self.assertEqual(generate.call_count,0 if tamper else 2)
                 self.assertEqual(recheck.call_count,0 if tamper else 1)
                 self.assertEqual(pv.load_json(job/'analysis/studio_plan.json'),original)
 

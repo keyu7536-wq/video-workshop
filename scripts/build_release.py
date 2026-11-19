@@ -29,6 +29,7 @@ REQUIRED = (
     'studio_render.py', 'studio_research.py', 'studio_revision.py',
     'studio_server.py', 'studio_voice.py', 'studio_story.py', 'studio_documents.py', 'studio_context.py', 'studio_process.py', 'studio_recovery.py',
     'studio_network.py', 'studio_search.py', 'studio_plan_repair.py', 'studio_repository.py', 'studio_review_assets.py', 'studio_media.py',
+    'studio_chart_composition.py', 'studio_repair_budget.py', 'studio_repair_checkpoint.py', 'studio_final_repair.py',
     'studio/index.html', 'studio/app.js', 'studio/display.js', 'studio/preview.js', 'studio/style.css', 'studio/voice-audition.html',
     'skills/paper-video-director/SKILL.md',
     'skills/paper-video-director/agents/openai.yaml',
@@ -52,6 +53,7 @@ REQUIRED = (
     'tests/test_visual_policy_review.py', 'tests/test_repository_fallback.py', 'tests/test_review_feedback.py', 'tests/test_review_assets.py', 'tests/test_plan_review_context.py',
     'tests/test_author_media.py', 'tests/test_audio_playback_ui.py', 'tests/test_backend_isolation.py', 'tests/test_console_output.py',
     'tests/test_plan_gate.py', 'tests/test_effective_canvas.py', 'tests/test_duration.py', 'tests/test_model_response_safety.py', 'tests/test_atomic_json.py',
+    'tests/test_chart_composition.py', 'tests/test_chart_pipeline.py', 'tests/test_repair_budget.py', 'tests/test_repair_checkpoint.py', 'tests/test_final_repair.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',
@@ -150,7 +152,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=ROOT)
     parser.add_argument('--output',type=Path,default=ROOT/'dist')
-    parser.add_argument('--version',default='0.3.2')
+    parser.add_argument('--version',default='0.3.3')
     parser.add_argument('--check',action='store_true')
     args=parser.parse_args();root=args.root.resolve()
     if args.check:

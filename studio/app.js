@@ -14,6 +14,7 @@ function updateDurationHint(){
 }
 function reviewNeedsChanges(review){return Boolean(review&&(review.ready===false||(review.issues||[]).some(issue=>issue.severity==='error')));}
 function currentPlanBlocked(job=state.job){return Boolean(job?.plan&&job.status!=='failed'&&reviewNeedsChanges(job.review)&&!job.review.stale&&!(job===state.job&&(state.dirty||displaySettingsChanged()||durationSettingsChanged())));}
+function repairBudgetExhausted(){const budget=state.job?.repair_budget;return Boolean(budget&&!budget.stale&&budget.remaining===0&&!budget.pending_review);}
 function jobStatusLabel(job){return job.status==='review_needed'&&job.stage==='plan_review'?'分镜待修改':({completed:'已生成',review_needed:'待复核草稿',prepared:'分镜已准备',failed:'需要处理',processing:'制作中',created:'新任务',cancelled:'已停止'})[job.status]||job.status;}
 let config = {backend:'codex', api_base:'https://api.openai.com/v1', model:'gpt-4.1', rate:'+50%', key:''};
 try { const saved=JSON.parse(localStorage.getItem('video-workshop-settings') || '{}'); for (const key of ['backend','api_base','model','rate']) if(saved[key]) config[key]=saved[key]; } catch (_) {}
@@ -87,7 +88,7 @@ async function refreshJobs() { try { const result=await api('/api/jobs');$('jobL
 $('refreshJobs').onclick=refreshJobs;
 $('newProject').onclick=()=>{if(state.active)return toast('请等待当前制作完成，或先停止任务。');state.job=null;state.dirty=false;restoreInputs();$('contentType').value='auto';$('storyFramework').value='auto';updateStoryHint();$('voice').value=appDefaults.default_voice;const saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}');config.rate=saved.rate||appDefaults.default_rate;settingsToForm();displayToForm({layout_style:'immersive',show_sources:false,show_disclosure:false,minimal_text:true});renderUploads();$('projectName').textContent='新的视频';$('taskStatus').hidden=true;$('researchPanel').innerHTML='';$('reviewBanner').innerHTML='';$('storyboard').innerHTML='';$('finalReviewPanel').innerHTML='';$('downloadLinks').innerHTML='';$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').hidden=true;$('videoEmpty').hidden=false;setPlaybackAudioJob(null);renderMeasuredSegments(false);updateControls();tab('create');refreshJobs();};
 
-function updateControls() { const editable=Boolean(state.job?.plan),blocked=currentPlanBlocked(),recovery=blocked?null:state.job?.recovery;$('retryJob').hidden=!recovery;$('retryJob').disabled=state.active;$('retryJob').textContent=recovery?.label||'继续制作';$('retryReview').hidden=recovery?.action!=='review';$('retryReview').disabled=state.active;$('regenerateDisplay').hidden=!editable;$('regenerateDisplay').disabled=state.active||blocked;$('createButton').disabled=state.active;$('quickCreate').disabled=state.active;$('savePlan').disabled=!editable||state.active;$('renderButton').disabled=!editable||state.active||blocked;$('renderButton').title=blocked?'请先修改下方指出的问题，或选择自动修正并生成。':'';$('replan').disabled=!editable||state.active;$('editInputs').hidden=!state.job;$('editInputs').disabled=state.active;$('exportButton').disabled=blocked||state.dirty||state.active||!(state.job?.can_export??['completed','review_needed'].includes(state.job?.status));if($('repairPlanButton'))$('repairPlanButton').disabled=state.active; }
+function updateControls() { const editable=Boolean(state.job?.plan),blocked=currentPlanBlocked(),recovery=blocked?null:state.job?.recovery;$('retryJob').hidden=!recovery;$('retryJob').disabled=state.active;$('retryJob').textContent=recovery?.label||'继续制作';$('retryReview').hidden=recovery?.action!=='review';$('retryReview').disabled=state.active;$('regenerateDisplay').hidden=!editable;$('regenerateDisplay').disabled=state.active||blocked;$('createButton').disabled=state.active;$('quickCreate').disabled=state.active;$('savePlan').disabled=!editable||state.active;$('renderButton').disabled=!editable||state.active||blocked;$('renderButton').title=blocked?'请先修改下方指出的问题，或选择自动修正并生成。':'';$('replan').disabled=!editable||state.active;$('editInputs').hidden=!state.job;$('editInputs').disabled=state.active;$('exportButton').disabled=blocked||state.dirty||state.active||!(state.job?.can_export??['completed','review_needed'].includes(state.job?.status));if($('repairPlanButton'))$('repairPlanButton').disabled=state.active||repairBudgetExhausted(); }
 $('quickCreate').onclick=()=>$('createButton').click();
 $('createButton').onclick=async()=>{
   if(state.uploads.some(file=>file.loading))return toast('请等待附件上传完成。');
@@ -125,12 +126,16 @@ function renderPlanReview(){
   if(blocked){
     html+=`<section class="notice error plan-review-blocked" role="alert"><strong>分镜待修改 · ${errors.length||1} 项需要修改</strong><p>内容复核尚未通过，已保留文稿与分镜。请修改对应段落或镜头，再复核生成。</p>`;
     html+=errors.length?`<ul class="review-issues">${errors.map(reviewIssueHTML).join('')}</ul>`:`<p>${escapeHTML(review?.summary||'审核没有返回具体问题，请查看制作日志。')}</p>`;
-    html+='<div class="review-repair-actions"><button type="button" id="repairPlanButton" class="primary">自动修正并生成</button><p class="small">按本次复核意见最多自动修正一次，重新复核通过后才生成。可能调整文稿与镜头；已有保护文稿仍按原文保留。</p></div></section>';
+    html+='<div class="review-repair-actions"><button type="button" id="repairPlanButton" class="primary">自动修正并生成</button><p class="small">全流程最多 3 次自动返修，重新复核通过后才生成。可能调整文稿与镜头；已有保护文稿仍按原文保留。</p></div></section>';
   }else if(errors.length){html+=`<details class="notice warning"><summary>上次复核 · ${errors.length} 项修改意见</summary><ul class="review-issues">${errors.map(reviewIssueHTML).join('')}</ul></details>`;}
   else if(!pending&&review?.ready===true){html+='<div class="notice">资料与文稿已完成自动复核。你仍可在下方修改，导出前会再次检查更改。</div>';}
   else if(!pending&&!review){html+='<div class="notice">文稿与分镜已生成，尚无内容复核结果。</div>';}
   if(warnings.length)html+=`<details class="notice warning"><summary>${warnings.length} 条非阻断提示</summary><ul class="review-issues">${warnings.map(reviewIssueHTML).join('')}</ul></details>`;
   if(plan.source_issues?.length)html+=`<details class="notice"><summary>${plan.source_issues.length} 条来源说明</summary><ul class="review-issues">${plan.source_issues.map(note=>`<li>${escapeHTML(note)}</li>`).join('')}</ul></details>`;
+  if(job.repair_budget){
+    const budget=job.repair_budget;
+    html+=budget.error?`<p id="repairBudgetStatus" class="small notice warning">无法读取自动返修次数：${escapeHTML(budget.error)}</p>`:`<p id="repairBudgetStatus" class="small muted">自动返修：已用 ${escapeHTML(budget.used)} / ${escapeHTML(budget.limit??3)} 次，剩余 ${escapeHTML(budget.remaining)} 次。${budget.pending_review?'已有候选等待复核；继续时只复核同一候选，不再次改写。':budget.stale?'输入已修改，生成时会核对新的返修预算。':repairBudgetExhausted()?'本版自动返修已用完，请根据意见手动修改；反复点击不会重置次数。':''}</p>`;
+  }
   $('reviewBanner').innerHTML=html;
   $('reviewBanner').querySelectorAll('[data-review-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.reviewShot.split(',').map(Number)));
   $('reviewBanner').querySelectorAll('[data-review-block]').forEach(button=>button.onclick=()=>{
@@ -138,7 +143,7 @@ function renderPlanReview(){
     if(card){card.scrollIntoView({behavior:'smooth',block:'center'});card.querySelector('[data-narration]').focus({preventScroll:true});}
   });
   if($('repairPlanButton'))$('repairPlanButton').onclick=async()=>{
-    if(state.active||!currentPlanBlocked())return;
+    if(state.active||!currentPlanBlocked()||repairBudgetExhausted())return;
     $('autoRepair').checked=true;
     await $('renderButton').onclick();
   };
@@ -227,19 +232,27 @@ $('copyPublishing').onclick=async()=>{try{await navigator.clipboard.writeText($(
 function openShot(bi,si) {
   state.shot=[bi,si];const shot=state.job.plan.blocks[bi].shots[si];state.originalBBox=[...shot.bbox];state.crop=shot.focus?.length===4?[...shot.focus]:shot.bbox.length===4?[...shot.bbox]:[0,0,1,1];
   $('shotFocus').checked=Boolean(shot.focus?.length);$('shotKeepFull').checked=Boolean(shot.keep_full);
+  $('columnCropEnabled').checked=Boolean(shot.column_crop);$('columnCropSpec').value=shot.column_crop?JSON.stringify(shot.column_crop):'';
   $('shotSource').innerHTML='<option value="card">讲解卡片</option>'+(shot.kind==='diagram'?'<option value="diagram">原理动态图 · 按旁白推进</option>':'')+(state.job.sources||[]).filter(source=>['page','image','video'].includes(source.type)).map(source=>`<option value="${escapeHTML(source.id)}">${escapeHTML(source.name)}${source.page?' · 第'+source.page+'页':''}</option>`).join('');
   $('shotSource').value=['card','diagram'].includes(shot.kind)?shot.kind:shot.source_id;$('shotIn').value=shot.in;$('shotDuration').value=shot.duration;$('shotLabel').value=shot.label;$('shotCue').value=shot.cue;$('shotCardText').value=shot.card_text;
-  updateShotSource();$('shotDialog').showModal();
+  updateShotSource();$('shotDialog').showModal();if(shot.column_crop)updateColumnCropPreview().catch(()=>{});
 }
 function updateShotSource(){const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value);const image=['page','image'].includes(source?.type);$('cropWrap').hidden=!image;$('cropHint').hidden=!image;$('focusControl').hidden=!image;$('keepControl').hidden=source?.type!=='video';$('cropHint').textContent='拖选裁切范围；勾选高亮只加框，保留原裁图。需要去掉多余内容时，先取消勾选高亮，再拖选要保留的区域。';$('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=source?.type!=='video';if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}updateShotPreview();}
-$('shotSource').onchange=()=>{state.crop=[0,0,1,1];updateShotSource();};
+$('shotSource').onchange=()=>{state.crop=[0,0,1,1];$('columnCropEnabled').checked=false;$('columnCropSpec').value='';updateShotSource();};
 function drawCrop(){const [x0,y0,x1,y1]=state.crop;$('cropBox').style.cssText=`left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%;`;}
 let cropStart=null;
 function cropPoint(event){const box=$('cropImage').getBoundingClientRect();return [Math.max(0,Math.min(1,(event.clientX-box.left)/box.width)),Math.max(0,Math.min(1,(event.clientY-box.top)/box.height))];}
-$('cropWrap').onpointerdown=event=>{event.preventDefault();cropStart=cropPoint(event);$('cropWrap').setPointerCapture(event.pointerId);};
+$('cropWrap').onpointerdown=event=>{if($('columnCropEnabled').checked)return;event.preventDefault();cropStart=cropPoint(event);$('cropWrap').setPointerCapture(event.pointerId);};
 $('cropWrap').onpointermove=event=>{if(!cropStart)return;const point=cropPoint(event);state.crop=[Math.min(cropStart[0],point[0]),Math.min(cropStart[1],point[1]),Math.max(cropStart[0],point[0]),Math.max(cropStart[1],point[1])];drawCrop();};
 $('cropWrap').onpointerup=()=>{cropStart=null;};
-$('shotForm').onsubmit=event=>{event.preventDefault();const [bi,si]=state.shot,shot=state.job.plan.blocks[bi].shots[si],source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value),focus=$('shotFocus').checked&&['page','image'].includes(source?.type);Object.assign(shot,{kind:$('shotSource').value==='diagram'?'diagram':source?.type||'card',source_id:source?.id||'',in:Number($('shotIn').value)||0,duration:Number($('shotDuration').value),bbox:['page','image'].includes(source?.type)?(focus?(state.originalBBox.length===4?state.originalBBox:source.type==='page'?[0,0,1,1]:[]):[...state.crop]):[],focus:focus?[...state.crop]:[],keep_full:source?.type==='video'&&$('shotKeepFull').checked,label:$('shotLabel').value,card_text:$('shotCardText').value,cue:$('shotCue').value});state.dirty=true;$('shotDialog').close();renderEditor();updateControls();renderMeasuredSegments(false);};
+$('shotForm').onsubmit=async event=>{
+  event.preventDefault();
+  let columnCrop=null;
+  if($('columnCropEnabled').checked){try{columnCrop=await updateColumnCropPreview();if(!columnCrop)return;}catch(error){toast(error.message);return;}}
+  const [bi,si]=state.shot,shot=state.job.plan.blocks[bi].shots[si],source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value),focus=!columnCrop&&$('shotFocus').checked&&['page','image'].includes(source?.type);
+  Object.assign(shot,{kind:$('shotSource').value==='diagram'?'diagram':source?.type||'card',source_id:source?.id||'',in:Number($('shotIn').value)||0,duration:Number($('shotDuration').value),bbox:columnCrop?[]:['page','image'].includes(source?.type)?(focus?(state.originalBBox.length===4?state.originalBBox:source.type==='page'?[0,0,1,1]:[]):[...state.crop]):[],column_crop:columnCrop,focus:focus?[...state.crop]:[],keep_full:source?.type==='video'&&$('shotKeepFull').checked,label:$('shotLabel').value,card_text:$('shotCardText').value,cue:$('shotCue').value});
+  state.dirty=true;$('shotDialog').close();renderEditor();updateControls();renderMeasuredSegments(false);
+};
 
 let previousActive=false;
 async function poll(){if(state.polling)return;state.polling=true;try{const wasActive=state.active||previousActive;const result=await api('/api/status');state.active=result.active;updateControls();

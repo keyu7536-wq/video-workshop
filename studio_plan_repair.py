@@ -1,4 +1,4 @@
-"""One auditable plan-repair attempt per substantive input version."""
+"""Auditable plan repair within the workflow's shared generation budget."""
 from __future__ import annotations
 
 import hashlib
@@ -10,8 +10,8 @@ import paper_video as pv
 
 
 # Increment only when the repair instructions/constraints materially change.
-# This permits one new attempt after a constraint correction without rerunning
-# accepted story reviews or rerolling unchanged candidates on every click.
+# Policies remain part of old diagnostic fingerprints. Upgrading a policy never
+# resets the shared generation quota or invalidates accepted story reviews.
 REPAIR_POLICY_VERSION = 1
 
 
@@ -132,7 +132,7 @@ def current_final_feedback(job, plan, request, previous):
     return result
 
 
-def repair_fingerprint(plan, sources, request):
+def repair_fingerprint(plan, sources, request, *, include_policy=True):
     """Exclude workflow toggles, credentials and access timestamps from identity."""
     from studio_display import DISPLAY_KEYS
     from studio_revision import file_hash
@@ -154,107 +154,138 @@ def repair_fingerprint(plan, sources, request):
             value=source.get(key)
             if isinstance(value,str) and value and Path(value).is_file() and value not in files:
                 files[value]=file_hash(Path(value))
-    payload={'plan':plan,'sources':clean_sources,'source_files':files,'settings':settings,
-             'story_policy_version':STORY_POLICY_VERSION,
-             'repair_policy_version':REPAIR_POLICY_VERSION}
+    if not include_policy:
+        # A shared generation budget follows actual user inputs, not software
+        # policy upgrades or unused custom-canvas/target-duration memory.
+        from studio_display import effective_display_settings
+        for key in DISPLAY_KEYS:settings.pop(key,None)
+        settings.update(effective_display_settings(request))
+        settings.pop('seconds',None);settings.pop('duration_mode',None)
+        settings.update(effective_duration_settings(request))
+        for key in ('links','files'):settings[key]=request.get(key,[])
+    payload={'plan':plan,'sources':clean_sources,'source_files':files,'settings':settings}
+    if include_policy:
+        payload.update(story_policy_version=STORY_POLICY_VERSION,repair_policy_version=REPAIR_POLICY_VERSION)
     return hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 
 def repair_plan_once(job, plan, sources, request, review):
-    """Return the accepted candidate and review, or the unchanged original pair.
+    """Use the remaining shared quota; keep the original until a candidate passes.
 
-    Generation is claimed once. A valid candidate whose review was unavailable
-    may be reviewed again on a later invocation, without generating a new one.
-    Rejected/invalid candidates cannot use that path. Active plan/review bytes
-    are restored on failure, and every invocation performs at most one review.
+    The historical function name remains for callers. Each rejected or invalid
+    candidate supplies concrete feedback for the next generation. An external
+    review failure suspends that same candidate and never triggers a new draft.
     """
     if request.get('auto_repair') is not True or _accepted(review) or not _review_available(review):
         return plan,review
     import studio_engine as engine
     from studio_process import redact
+    from studio_repair_budget import (ensure_budget,reserve_attempt,finish_attempt,
+                                      pending_attempt,generation_retryable)
     job=Path(job);analysis=job/'analysis'
-    fingerprint=repair_fingerprint(plan,sources,request)
-    folder=analysis/'plan_repair'/fingerprint
-    folder.mkdir(parents=True,exist_ok=True)
-    record_path=folder/'attempt.json'
-    record={'fingerprint':fingerprint,'status':'started','attempts':1,'review_attempts':0,
-            'repair_policy_version':REPAIR_POLICY_VERSION}
-    resume_review=False
-    # Exclusive creation also prevents two callers from spending another attempt.
-    try:
-        with record_path.open('x',encoding='utf-8') as stream:
-            json.dump(record,stream,ensure_ascii=False,indent=2)
-    except FileExistsError:
-        record=pv.load_json(record_path)
-        resume_review=(record.get('status')=='review_unavailable'
-                       and record.get('candidate_validated') is True)
-        if not resume_review:
-            pv.log('【文稿与分镜】本版计划已尝试自动返修，保留审核结果；修改资料、文稿或设置后可再尝试。')
-            return plan,review
     plan_path=analysis/'studio_plan.json';review_path=job/'review.json'
     original_plan=plan_path.read_bytes() if plan_path.is_file() else None
     original_review=review_path.read_bytes() if review_path.is_file() else None
-    if not resume_review:
-        pv.save_json(folder/'original_plan.json',plan)
-        pv.save_json(folder/'original_review.json',review)
-    accepted=False;candidate=None
-    phase='validation' if resume_review else 'generation'
-    pv.log('【文稿与分镜】重新审核已保存的修订候选，不再生成新稿' if resume_review
-           else '【文稿与分镜】针对计划审核的具体问题自动返修一次')
-    try:
-        if resume_review:
+    current=plan;feedback=review
+    secrets=[request.get('key',''),request.get('api_key',''),
+             os.environ.get('PAPER_VIDEO_API_KEY',''),os.environ.get('OPENAI_API_KEY','')]
+
+    def detail(exc):return redact(f'{type(exc).__name__}: {exc}',secrets)[:1500]
+    def remember(ticket):
+        pv.save_json(analysis/'plan_repair_latest.json',ticket|{'repair_policy_version':REPAIR_POLICY_VERSION})
+    def restore():
+        for path,original in ((plan_path,original_plan),(review_path,original_review)):
+            if original is not None:path.write_bytes(original)
+            elif path.is_file():path.unlink()
+
+    state=ensure_budget(job,plan,sources,request)
+    reviewed={engine.plan_hash(plan):review}
+    for item in state['attempts']:
+        folder=Path(item['folder']);saved=folder/'candidate_review.json'
+        if item.get('candidate_plan_hash') and saved.is_file():
+            checked=pv.load_json(saved)
+            if _review_available(checked):reviewed[item['candidate_plan_hash']]=checked
+    try:pending=pending_attempt(job,plan,sources,request,'plan')
+    except ValueError as exc:
+        pv.log('  无法复用修订候选：'+detail(exc));return plan,review
+    # An interrupted generation has spent its reservation. A later request uses
+    # its saved concrete outcome, rather than resetting the original counter.
+    history=[item for item in state['attempts'] if item.get('stage')=='plan']
+    if history and pending is None:
+        last=history[-1];folder=Path(last['folder'])
+        if last.get('candidate_plan_hash') and (folder/'candidate.json').is_file():
             candidate=pv.load_json(folder/'candidate.json')
-            if (record.get('fingerprint')!=fingerprint
-                    or record.get('candidate_plan_hash')!=engine.plan_hash(candidate)):
-                raise ValueError('保存的修订候选或输入指纹已改变，不能复用上次审核重试。')
-        else:
-            images=pv.load_json(analysis/'images.json') if (analysis/'images.json').is_file() else []
-            prompt=engine.prompt_for(sources,images,request)
-            prompt+='\n本次只对以下计划审核指出的具体问题做最小修复。保留已正确的事实、主线和相关镜头；不能通过删去关键解释或事实限定来换取通过。'
-            prompt+='根据实际来源修正错误文稿或不对应的镜头，无法核实时保留缺口，不得编造实验。若用户给定script，逐字及顺序保护仍最高优先，只能修分段和镜头，不能改稿。'
-            prompt+='\n当前计划：'+json.dumps(plan,ensure_ascii=False)+'\n具体审核：'+json.dumps(review,ensure_ascii=False)
-            candidate=engine.call_ai(prompt,[Path(path) for _,path in images],analysis,request,
-                                     engine.SCHEMA,'_plan_repair_'+fingerprint[:12])
-            pv.save_json(folder/'candidate.json',candidate)
-        phase='validation'
-        engine.validate(candidate,sources,request.get('script','').strip())
-        engine.validate_visual_policy(candidate,request)
-        pv.save_json(folder/'candidate.json',candidate)
-        record.update(candidate_validated=True,candidate_plan_hash=engine.plan_hash(candidate))
-        phase='review'
-        record['review_attempts']=record.get('review_attempts',0)+1
-        record['status']='reviewing';record.pop('reason',None)
-        pv.save_json(record_path,record)
-        candidate_review=engine.review_plan(job,candidate,sources,request)
-        pv.save_json(folder/'candidate_review.json',candidate_review)
-        pv.save_json(folder/f"candidate_review_{record['review_attempts']:02}.json",candidate_review)
-        if not _accepted(candidate_review):
-            record.update(status='rejected' if _review_available(candidate_review) else 'review_unavailable',
-                          reason='修订候选未获完整通过，保留原计划与原审核；审核不可用不视为内容错误。')
+            if engine.plan_hash(candidate)==last['candidate_plan_hash']:current=candidate
+        if (folder/'candidate_review.json').is_file():feedback=pv.load_json(folder/'candidate_review.json')
+        elif last.get('reason'):
+            feedback={'ready':False,'summary':last['reason'],'issues':[{'severity':'error','reason':last['reason']}]}
+
+    while True:
+        ticket=pending or reserve_attempt(job,plan,sources,request,'plan',feedback)
+        if ticket is None:
+            pv.log('【文稿与分镜】本输入已用完共享修订次数，或有候选正在等待恢复审核；保留当前计划和具体问题。')
             return plan,review
-        phase='commit'
-        pv.save_json(plan_path,candidate)
-        pv.save_json(review_path,candidate_review)
-        accepted=True
-        record.update(status='accepted',accepted_plan_hash=engine.plan_hash(candidate))
-        return candidate,candidate_review
-    except Exception as exc:
-        secrets=[request.get('key',''),request.get('api_key',''),
-                 os.environ.get('PAPER_VIDEO_API_KEY',''),os.environ.get('OPENAI_API_KEY','')]
-        detail=redact(f'{type(exc).__name__}: {exc}',secrets)[:1500]
-        status={'generation':'generation_failed','validation':'invalid_candidate',
-                'review':'review_unavailable','commit':'save_failed'}[phase]
-        record.update(status=status,reason=detail)
-        if phase=='validation':record['candidate_validated']=False
-        if phase=='review':
-            pv.save_json(folder/f"candidate_review_failure_{record['review_attempts']:02}.json",
-                         {'status':'unavailable','reason':detail})
-        pv.log('  自动计划返修未通过，保留原计划与审核：'+detail[:250])
-        return plan,review
-    finally:
-        if not accepted:
-            for path,original in ((plan_path,original_plan),(review_path,original_review)):
-                if original is not None:path.write_bytes(original)
-                elif path.is_file():path.unlink()
-        pv.save_json(record_path,record)
-        pv.save_json(analysis/'plan_repair_latest.json',record)
+        resume=pending is not None;pending=None
+        folder=Path(ticket['folder']);accepted=False;candidate=None
+        phase='validation' if resume else 'generation'
+        pv.save_json(folder/'original_review.json',review)
+        pv.log('【文稿与分镜】只重新审核已保存候选，不生成新稿' if resume else
+               f"【文稿与分镜】根据具体反馈生成修订候选（共享次数 {ticket['number']}/3）")
+        try:
+            if resume:
+                candidate=pv.load_json(folder/'candidate.json')
+            else:
+                images=pv.load_json(analysis/'images.json') if (analysis/'images.json').is_file() else []
+                prompt=engine.prompt_for(sources,images,request)
+                prompt+='\n本次只对以下具体问题做最小修复。保留已正确的事实、主线和相关镜头；不能通过删去关键解释或事实限定来换取通过。'
+                prompt+='根据实际来源修正错误文稿或不对应的镜头，无法核实时保留缺口，不得编造实验。若用户给定script，逐字及顺序保护仍最高优先，只能修分段和镜头，不能改稿。'
+                prompt+='\n原始计划：'+json.dumps(plan,ensure_ascii=False)+'\n上一轮候选：'+json.dumps(current,ensure_ascii=False)
+                prompt+='\n本轮需要处理的具体反馈：'+json.dumps(feedback,ensure_ascii=False)
+                candidate=engine.call_ai(prompt,[Path(path) for _,path in images],analysis,request,
+                                         engine.SCHEMA,f"_plan_repair_{ticket['budget_id'][:12]}_{ticket['number']}")
+                ticket=finish_attempt(job,ticket,'generated',candidate=candidate,candidate_validated=False)
+            phase='validation'
+            engine.validate(candidate,sources,request.get('script','').strip())
+            engine.validate_visual_policy(candidate,request)
+            ticket=finish_attempt(job,ticket,'validated',candidate=candidate,candidate_validated=True)
+            candidate_hash=engine.plan_hash(candidate)
+            if candidate_hash in reviewed and not _accepted(reviewed[candidate_hash]):
+                candidate_review=reviewed[candidate_hash]
+                ticket=finish_attempt(job,ticket,'repeated_candidate',review=candidate_review,
+                    reason='候选与已完成审核的拒绝版本相同，不重复审核碰运气；需要实际修正具体问题。')
+                feedback={**candidate_review,'repair_feedback':ticket['reason']}
+                current=candidate;remember(ticket)
+                continue
+            phase='review'
+            ticket=finish_attempt(job,ticket,'reviewing')
+            candidate_review=engine.review_plan(job,candidate,sources,request)
+            if not _review_available(candidate_review):
+                ticket=finish_attempt(job,ticket,'review_unavailable',review=candidate_review,
+                                      reason='审核暂未完成，保留同一候选供重新审核，不生成新稿。')
+                remember(ticket);return plan,review
+            reviewed[candidate_hash]=candidate_review
+            if not _accepted(candidate_review):
+                ticket=finish_attempt(job,ticket,'rejected',review=candidate_review)
+                feedback=candidate_review;current=candidate;remember(ticket)
+                continue
+            phase='commit'
+            pv.save_json(plan_path,candidate);pv.save_json(review_path,candidate_review)
+            ticket=finish_attempt(job,ticket,'accepted',review=candidate_review)
+            accepted=True;remember(ticket)
+            return candidate,candidate_review
+        except Exception as exc:
+            status={'generation':'generation_failed','validation':'invalid_candidate',
+                    'review':'review_unavailable','commit':'save_failed'}[phase]
+            message=detail(exc)
+            ticket=finish_attempt(job,ticket,status,reason=message,
+                                  candidate_validated=False if phase=='validation' else None)
+            if phase=='review':
+                pv.save_json(folder/f"candidate_review_failure_{ticket['review_attempts']:02}.json",
+                             {'status':'unavailable','reason':message})
+            remember(ticket)
+            pv.log('  修订候选未通过，保留原计划：'+message[:250])
+            if phase not in ('generation','validation') or not generation_retryable(exc):return plan,review
+            if candidate is not None:current=candidate
+            feedback={'ready':False,'summary':message,'issues':[{'severity':'error','reason':message}]}
+        finally:
+            if not accepted:restore()

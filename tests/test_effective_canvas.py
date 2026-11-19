@@ -62,7 +62,7 @@ class EffectiveCanvasTests(unittest.TestCase):
                 result=engine.review_plan(job,{'blocks':[]},[],request)
         actual=visual_settings(ai.call_args.args[0])
         self.assertEqual((actual['width'],actual['height']),(1080,1920))
-        self.assertEqual(result['_plan_review_context_version'],4)
+        self.assertEqual(result['_plan_review_context_version'],5)
         self.assertEqual(result['_effective_display_settings'],actual)
         self.assertEqual(request,original)
 

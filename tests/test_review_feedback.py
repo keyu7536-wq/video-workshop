@@ -99,7 +99,7 @@ class ReviewFeedbackTests(unittest.TestCase):
                 state=pv.load_json(self.job/'job.json')
                 self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
                 self.assertIsNone(state['error'])
-        generate.assert_called_once();review.assert_called_once();render.assert_not_called()
+        self.assertEqual(generate.call_count,3);review.assert_called_once();render.assert_not_called()
         self.assertFalse(pv.load_json(self.job/'review.json')['ready'])
         self.assertEqual(pv.load_json(self.job/'analysis/studio_plan.json'),self.plan)
 

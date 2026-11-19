@@ -11,6 +11,19 @@ from tests.test_plan_repair import BLOCKED, PASSED, SOURCES, fixed, setup_job
 
 
 class PlanGateTests(unittest.TestCase):
+    def test_disabled_auto_repair_cannot_resume_pending_timing_past_a_rejected_plan(self):
+        from studio_repair_budget import reserve_attempt,finish_attempt
+        with tempfile.TemporaryDirectory() as folder:
+            job,request,original,review=setup_job(folder,{'auto_repair':False,'final_review':False})
+            ticket=reserve_attempt(job,original,SOURCES,request,'timing')
+            finish_attempt(job,ticket,'review_unavailable',candidate=fixed(),candidate_validated=True)
+            with patch.object(engine,'export'),patch.object(engine,'call_ai') as ai, \
+                 patch('studio_recovery.render_with_recovery') as render,patch('paper_video.log'):
+                engine.execute(job,'render')
+            self.assert_waiting_for_edit(job)
+            render.assert_not_called();ai.assert_not_called()
+            self.assertEqual(pv.load_json(job/'review.json'),review)
+
     def assert_waiting_for_edit(self, job):
         state = pv.load_json(job / 'job.json')
         self.assertEqual(state['status'], 'review_needed')
@@ -50,15 +63,16 @@ class PlanGateTests(unittest.TestCase):
                 ai.assert_not_called(); render.assert_not_called()
                 self.assertEqual(pv.load_json(job / 'review.json'), saved_review)
 
-    def test_auto_repair_enabled_still_has_one_rejected_candidate_and_no_encoding(self):
+    def test_auto_repair_shares_three_attempts_without_rereviewing_identical_rejections(self):
         with tempfile.TemporaryDirectory() as folder:
             job, request, original, review = setup_job(folder, {'auto_repair': True})
-            with patch.object(engine, 'call_ai', side_effect=[fixed(), copy.deepcopy(BLOCKED)]) as ai, \
+            def reply(*args):return fixed() if args[-1].startswith('_plan_repair_') else copy.deepcopy(BLOCKED)
+            with patch.object(engine, 'call_ai', side_effect=reply) as ai, \
                     patch.object(engine, 'export'), patch('studio_recovery.render_with_recovery') as render, \
                     patch('paper_video.log'):
                 engine.execute(job, 'render'); engine.execute(job, 'render')
             self.assert_waiting_for_edit(job)
-            self.assertEqual(ai.call_count, 2)  # One candidate and its independent review.
+            self.assertEqual(ai.call_count, 4)  # Three generations; the identical rejected plan is reviewed once.
             render.assert_not_called()
             self.assertEqual(pv.load_json(job / 'analysis/studio_plan.json'), original)
             self.assertEqual(pv.load_json(job / 'review.json'), review)

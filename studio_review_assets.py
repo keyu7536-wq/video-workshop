@@ -40,10 +40,18 @@ def _target(folder, path, page, bbox):
     return folder / (digest + '.png')
 
 
-def _render(job, folder, source, bbox=None):
+def _render(job, folder, source, bbox=None, column_crop=None, request=None):
     """Use the same PDF panel clipping and pixel crop coordinates as export."""
     path = _inside(job, source['file'])
     page_number = source.get('page') if source['type'] == 'page' else None
+    if column_crop:
+        from studio_chart_composition import render_column_crop, RENDER_VERSION
+        from studio_display import dimensions
+        width, height = dimensions(request or {})
+        target = _target(folder, path, page_number, {'column_crop':column_crop,'canvas':[width,height],'version':RENDER_VERSION})
+        picture, actual = render_column_crop(path,column_crop,page=page_number,width=width,height=height)
+        picture.save(target)
+        return target, actual
     target = _target(folder, path, page_number, bbox)
     actual = None
     if source['type'] == 'page':
@@ -80,7 +88,7 @@ def _render(job, folder, source, bbox=None):
     return target, actual
 
 
-def _composition(job,folder,source,bbox,focus,request):
+def _composition(job,folder,source,bbox,focus,request,column_crop=None):
     """Project a registered source into the renderer's canvas, never auto-crop it.
 
     Native-pixel metrics describe rectangles, not semantic subject size. This
@@ -92,10 +100,15 @@ def _composition(job,folder,source,bbox,focus,request):
     settings=effective_display_settings(request)
     width,height=settings['width'],settings['height']
     source_path=_inside(job,source['file'])
-    protected=source['type']=='page'
+    protected=source['type']=='page' or bool(column_crop)
     mapped=list(focus or [])
     actual=None
-    if protected:
+    if column_crop:
+        from studio_chart_composition import render_column_crop
+        picture,actual=render_column_crop(source_path,column_crop,
+            page=source.get('page') if source['type']=='page' else None,width=width,height=height)
+        mapped=[]
+    elif protected:
         import pymupdf
         from studio_crop import panel_clip
         with pymupdf.open(source_path) as document:
@@ -136,7 +149,7 @@ def _composition(job,folder,source,bbox,focus,request):
         right=min(x+mw,dx+mapped[2]*dw);bottom=min(y+mh,dy+mapped[3]*dh)
         if right>left and bottom>top:focus_rect=[left,top,right-left,bottom-top]
     target=_target(folder,source_path,source.get('page'),
-        {'composition-v1':settings,'bbox':bbox,'focus':focus,'protected':protected})
+        {'composition-v2':settings,'bbox':bbox,'focus':focus,'column_crop':column_crop,'protected':protected})
     canvas=Image.new('RGB',(width,height),(8,14,21))
     if cover:
         # Resize only the visible center crop, avoiding a huge intermediate for
@@ -194,15 +207,19 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
                 raise ValueError('审核所选素材类型不匹配：' + source_id)
             _inside(job, source['file'])
             selected.setdefault(source_id, source)
+            from studio_chart_composition import validate_column_crop
+            column_crop=validate_column_crop(shot.get('column_crop'))
             bbox = _bbox(shot.get('bbox'))
-            if bbox and bbox != [0, 0, 1, 1]:
-                key = (source_id, tuple(bbox))
-                item = crop_requests.setdefault(key, {'source_id': source_id, 'bbox': bbox, 'shots': []})
+            if column_crop and (bbox or shot.get('focus')):
+                raise ValueError('列区间拼接不能同时使用 bbox 或 focus。')
+            if column_crop or (bbox and bbox != [0, 0, 1, 1]):
+                key = (source_id, tuple(bbox or []),json.dumps(column_crop,sort_keys=True))
+                item = crop_requests.setdefault(key, {'source_id': source_id, 'bbox': bbox, 'column_crop':column_crop,'shots': []})
                 item['shots'].append({'block_id': block.get('id'), 'shot_index': index})
             if request is not None:
                 focus=_bbox(shot.get('focus'))
-                key=(source_id,tuple(bbox or []),tuple(focus or []))
-                item=compositions.setdefault(key,{'source_id':source_id,'bbox':bbox or [],'focus':focus or [],'shots':[]})
+                key=(source_id,tuple(bbox or []),tuple(focus or []),json.dumps(column_crop,sort_keys=True))
+                item=compositions.setdefault(key,{'source_id':source_id,'bbox':bbox or [],'focus':focus or [],'column_crop':column_crop,'shots':[]})
                 item['shots'].append({'block_id':block.get('id'),'shot_index':index})
 
     def relevant_video(label):
@@ -217,7 +234,7 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
             if path not in seen_paths:
                 seen_paths.add(path)
                 video_images.append((label, path))
-    required = len(selected) + len(video_images)
+    required = len(selected) + len(video_images) + sum(bool(item['column_crop']) for item in crop_requests.values())
     if required > max_images:
         raise ValueError(f'当前分镜所选素材需要{required}张审核附图，超过{max_images}张预算；请拆分任务，不能静默省略。')
 
@@ -240,19 +257,21 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
         coverage['originals'].append({'source_id': source_id, 'label': label, 'path': str(path),
                                       'page': source.get('page'), 'actual_bounds': bounds})
     result.extend(video_images)
-    for item in crop_requests.values():
+    # A multi-column derivative must always be accompanied by its original.
+    # Reserve these before optional single-region crops and canvas previews.
+    for item in sorted(crop_requests.values(),key=lambda item:not bool(item['column_crop'])):
         if len(result) >= max_images:
             coverage['omitted_crops'].append(item | {'reason': 'Image budget; selected source full image is still attached.'})
             continue
-        path, actual = _render(job, folder, selected[item['source_id']], item['bbox'])
-        label = item['source_id'] + ' · 实际裁图 bbox=' + json.dumps(item['bbox'], separators=(',', ':'))
+        path, actual = _render(job, folder, selected[item['source_id']], item['bbox'],item['column_crop'],request)
+        label = item['source_id'] + (' · 同尺度列区间拼接（虚线为省略区域） column_crop=' + json.dumps(item['column_crop'],separators=(',', ':')) if item['column_crop'] else ' · 实际裁图 bbox=' + json.dumps(item['bbox'], separators=(',', ':')))
         result.append((label, path))
         coverage['crops'].append(item | {'label': label, 'path': str(path), 'actual_bounds': actual})
     for item in compositions.values():
         if len(result)>=max_images:
             coverage['omitted_compositions'].append(item|{'reason':'Image budget; composition not inspected.'})
             continue
-        path,metrics=_composition(job,folder,selected[item['source_id']],item['bbox'],item['focus'],request)
+        path,metrics=_composition(job,folder,selected[item['source_id']],item['bbox'],item['focus'],request,item['column_crop'])
         label=item['source_id']+' · 构图预览（非成片） '+str(metrics['canvas'][0])+'×'+str(metrics['canvas'][1])
         result.append((label,path))
         coverage['compositions'].append(item|metrics|{'label':label,'path':str(path)})

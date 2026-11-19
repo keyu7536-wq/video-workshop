@@ -181,7 +181,7 @@ class JobErrorUITests(unittest.TestCase):
 
     def test_explicit_auto_repair_uses_existing_render_api_and_quality_review(self):
         self.open_job('plan_blocked')
-        self.assertIn('最多自动修正一次',self.page.locator('#reviewBanner').inner_text())
+        self.assertIn('全流程最多 3 次',self.page.locator('#reviewBanner').inner_text())
         before=pv.load_json(self.root/'jobs/plan_blocked/analysis/studio_plan.json')
         with patch.object(self.http.manager,'start') as start:
             with self.page.expect_response(lambda response:response.url.endswith('/api/render') and response.request.method=='POST') as response:
@@ -192,6 +192,25 @@ class JobErrorUITests(unittest.TestCase):
         self.assertIs(request['auto_repair'],True)
         self.assertIs(request['final_review'],True)
         self.assertEqual(pv.load_json(self.root/'jobs/plan_blocked/analysis/studio_plan.json'),before)
+        self.assertEqual(self.errors,[])
+
+    def test_repair_budget_exhausted_pending_review_and_new_inputs_are_distinct(self):
+        original=server.snapshot
+        cases=[({'limit':3,'used':3,'remaining':0,'pending_review':False,'stale':False},True,'本版自动返修已用完'),
+               ({'limit':3,'used':3,'remaining':0,'pending_review':True,'stale':False},False,'只复核同一候选'),
+               ({'limit':3,'used':3,'remaining':0,'pending_review':False,'stale':True},False,'输入已修改')]
+        for budget,disabled,message in cases:
+            with self.subTest(budget=budget),patch.object(server,'snapshot',side_effect=lambda job:original(job)|{'repair_budget':budget}):
+                self.open_job('plan_blocked')
+                self.assertEqual(self.page.locator('#repairPlanButton').is_disabled(),disabled)
+                self.assertIn('已用 3 / 3 次，剩余 0 次',self.page.locator('#repairBudgetStatus').inner_text())
+                self.assertIn(message,self.page.locator('#repairBudgetStatus').inner_text())
+                self.assertFalse(self.page.locator('#autoRepair').is_checked())
+        invalid={'limit':3,'used':None,'remaining':None,'pending_review':False,'stale':True,'error':'计数记录无效'}
+        with patch.object(server,'snapshot',side_effect=lambda job:original(job)|{'repair_budget':invalid}):
+            self.open_job('plan_blocked')
+            self.assertIn('无法读取自动返修次数',self.page.locator('#repairBudgetStatus').inner_text())
+            self.assertNotIn('输入已修改',self.page.locator('#repairBudgetStatus').inner_text())
         self.assertEqual(self.errors,[])
 
     def test_manual_shot_edit_saves_crop_and_enables_review_without_auto_repair(self):

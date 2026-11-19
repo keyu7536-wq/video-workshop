@@ -72,6 +72,48 @@ class ShotPreviewTests(unittest.TestCase):
         self.page.goto(self.base+'/?job='+self.job.name,wait_until='networkidle')
         self.page.wait_for_selector('[data-shot="0,0"]',state='attached')
 
+    def test_column_composition_previews_actual_backend_pixels_and_persists_edits(self):
+        from PIL import Image, ImageDraw
+        image=Image.new('RGB',(1000,600),'white');draw=ImageDraw.Draw(image)
+        draw.rectangle((0,0,199,599),fill='red');draw.rectangle((600,0,999,599),fill='blue')
+        source=self.job/'assets/chart.png';image.save(source)
+        crop={'y':[.1,.9],'columns':[[0,.2],[.6,1]]}
+        self.plan['blocks'][0]['shots'][0].update(kind='image',source_id='chart',bbox=[],focus=[],column_crop=crop,keep_full=False)
+        pv.save_json(self.job/'analysis/studio_plan.json',self.plan)
+        pv.save_json(self.job/'analysis/sources.json',[{'id':'chart','type':'image','name':'Chart','file':str(source)}])
+        self.open_job();self.page.locator('[data-shot="0,0"]').click()
+        self.page.wait_for_function("document.querySelector('#columnCropPreview')?.naturalWidth>0 && !document.querySelector('#columnCropPreview').hidden")
+        self.assertTrue(self.page.locator('#columnCropEnabled').is_checked())
+        self.assertTrue(self.page.locator('#shotFocus').is_disabled())
+        self.assertIn('/analysis/column_previews/',self.page.locator('#columnCropPreview').get_attribute('src'))
+        crop['columns']=[[0,.15],[.65,.95]]
+        self.page.locator('#columnCropSpec').fill(json.dumps(crop))
+        self.assertTrue(self.page.locator('#columnCropPreview').is_hidden())
+        self.page.locator('#shotForm button[type=submit]').click()
+        self.page.wait_for_function("!document.querySelector('#shotDialog').open")
+        self.page.locator('#savePlan').click()
+        self.page.wait_for_function("document.querySelector('#toast').textContent.includes('已保存')")
+        shot=pv.load_json(self.job/'analysis/studio_plan.json')['blocks'][0]['shots'][0]
+        self.assertEqual(shot['column_crop'],crop);self.assertEqual(shot['bbox'],[]);self.assertEqual(shot['focus'],[])
+        self.assertEqual(pv.load_json(self.job/'request.json')['format'],'landscape')
+        self.http.manager.start.assert_not_called();self.assertEqual(self.errors,[])
+
+    def test_invalid_column_composition_stays_in_editor_without_saving(self):
+        from PIL import Image
+        source=self.job/'assets/chart.png';Image.new('RGB',(800,600),'white').save(source)
+        self.plan['blocks'][0]['shots'][0].update(kind='image',source_id='chart',bbox=[0,0,1,1],focus=[],keep_full=False)
+        pv.save_json(self.job/'analysis/studio_plan.json',self.plan)
+        pv.save_json(self.job/'analysis/sources.json',[{'id':'chart','type':'image','name':'Chart','file':str(source)}])
+        before=(self.job/'analysis/studio_plan.json').read_bytes()
+        self.open_job();self.page.locator('[data-shot="0,0"]').click()
+        self.page.locator('#columnCropSpec').evaluate("element=>element.value=JSON.stringify({y:[0,1],columns:[[0,.7],[.6,1]]})")
+        self.page.locator('#columnCropEnabled').check()
+        self.page.locator('#shotForm button[type=submit]').click()
+        self.page.wait_for_function("document.querySelector('#columnCropHint').textContent.includes('重叠')")
+        self.assertTrue(self.page.locator('#shotDialog').is_visible())
+        self.assertEqual((self.job/'analysis/studio_plan.json').read_bytes(),before)
+        self.http.manager.start.assert_not_called();self.assertEqual(self.errors,[])
+
     def test_source_clip_plays_actual_frames_and_stops_at_selected_end(self):
         self.open_job();self.page.locator('[data-shot="0,0"]').click()
         self.page.wait_for_function("document.querySelector('#shotVideoPreview')?.readyState>=2")

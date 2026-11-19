@@ -261,6 +261,9 @@ def snapshot(job):
     if (job/'analysis/sources.json').is_file():
         sources=pv.load_json(job/'analysis/sources.json')
         result['sources']=[{k:v for k,v in source.items() if k not in ('text','file','preview')} for source in sources]
+    if sources is not None:
+        from studio_repair_budget import budget_summary
+        result['repair_budget']=budget_summary(job,result.get('plan'),sources,result.get('request',{}))
     if legacy_plan_checkpoint(state,result.get('plan'),result.get('review'),result.get('request',{}),sources):
         state={**state,'status':'review_needed','stage':'plan_review','error':None}
         result.update(status='review_needed',stage='plan_review',error=None,recorded_status='failed')
@@ -303,6 +306,10 @@ def snapshot(job):
         elif not plan_path.is_file() or state.get('failed_action') in ('prepare','resume'):
             recovery={'action':'resume','label':'继续生成文稿与分镜'}
         else:recovery={'action':'render','label':'重试生成视频'}
+    budget=result.get('repair_budget') or {}
+    if (not budget.get('stale') and budget.get('pending_review')
+            and state['status'] in ('failed','cancelled','review_needed','prepared')):
+        recovery={'action':'render','label':'继续复核返修候选'}
     result['recovery']=recovery
     result['can_export']=not plan_gate and current_export and (state['status'] in ('completed','review_needed') or can_retry_export)
     # Use measured, rendered shot windows; the plan may differ after timing repair.
@@ -365,6 +372,35 @@ class Handler(BaseHTTPRequestHandler):
                         except (ValueError,OSError,KeyError): pass
                 return self.json({'jobs':items[:40]})
             if path=='/api/job': return self.json(snapshot(job_path(query.get('id',[''])[0])))
+            if path=='/api/column-preview':
+                from hashlib import sha256
+                from studio_chart_composition import render_column_crop,validate_column_crop,RENDER_VERSION
+                from studio_display import dimensions,validate_display
+                if len(parsed.query)>8192 or set(query)-{'job','id','column_crop','display'}:
+                    raise ValueError('列区间预览参数无效。')
+                job=job_path(query.get('job',[''])[0]);source_id=query.get('id',[''])[0]
+                source=next((item for item in pv.load_json(job/'analysis/sources.json') if item['id']==source_id),None)
+                if not source or source.get('type') not in ('page','image'):
+                    raise ValueError('列区间预览只支持当前任务的图片或 PDF 页。')
+                source_path=Path(source['file']);source_path=(source_path if source_path.is_absolute() else job/source_path).resolve()
+                if not source_path.is_relative_to(job.resolve()) or not source_path.is_file():
+                    raise ValueError('素材不存在或超出任务目录。')
+                spec=validate_column_crop(json.loads(query.get('column_crop',['null'])[0]))
+                if spec is None:raise ValueError('请填写列区间。')
+                display=json.loads(query['display'][0]) if 'display' in query else pv.load_json(job/'request.json')
+                if not isinstance(display,dict):raise ValueError('画面设置无效。')
+                validate_display(display);width,height=dimensions(display)
+                stat=source_path.stat()
+                identity=[source_id,str(source_path),stat.st_size,stat.st_mtime_ns,source.get('page'),spec,width,height,RENDER_VERSION]
+                key=sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
+                folder=job/'analysis/column_previews';folder.mkdir(exist_ok=True)
+                target=folder/(key+'.png');manifest=folder/(key+'.json')
+                if target.is_file() and manifest.is_file():metadata=pv.load_json(manifest)
+                else:
+                    picture,metadata=render_column_crop(source_path,spec,page=source.get('page') if source['type']=='page' else None,width=width,height=height)
+                    picture.save(target);pv.save_json(manifest,metadata)
+                return self.json({'url':f'/files/{job.name}/analysis/column_previews/{target.name}',
+                    'source_id':source_id,'provenance':metadata})
             if path=='/api/source':
                 job=job_path(query.get('job',[''])[0]); source_id=query.get('id',[''])[0]
                 source=next((s for s in pv.load_json(job/'analysis/sources.json') if s['id']==source_id),None)

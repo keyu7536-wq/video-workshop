@@ -112,6 +112,7 @@ class VisualPolicyReviewTests(unittest.TestCase):
             repaired,review=repair_plan_once(self.job,plan,sources,request,rejected)
         self.assertEqual(repaired,plan);self.assertFalse(review['ready'])
         self.assertEqual((self.job/'analysis/studio_plan.json').read_bytes(),original)
+        plan_prompts=list(prompts);prompts.clear()
         def needs_more_visuals(job):
             pv.save_json(job/'output/timing_recovery.json',{'status':'needs_more_visuals',
                 'code':'insufficient_visual_duration','project_sha256':file_hash(job/'project.json'),
@@ -119,12 +120,15 @@ class VisualPolicyReviewTests(unittest.TestCase):
             raise RuntimeError('Measured timing diagnostic fixture')
         with patch('studio_engine.call_ai',side_effect=ai),patch('studio_engine.render',side_effect=needs_more_visuals),patch('paper_video.log'):
             with self.assertRaisesRegex(ValueError,'未通过内容审核'):
-                render_with_recovery(self.job,request,plan,sources)
+                # The first scenario has exhausted this input's shared quota.
+                # A different explicit brief isolates timing prompt coverage;
+                # cross-stage quota persistence is tested separately.
+                render_with_recovery(self.job,{**request,'brief':'Inspect timing repair instructions.'},plan,sources)
         self.assertEqual((self.job/'analysis/studio_plan.json').read_bytes(),original)
-        self.assertEqual(len(prompts),4)
-        self.assertTrue(prompts[0][0].startswith('_plan_repair_'))
-        self.assertEqual(prompts[2][0],'_timing_repair')
-        for _,prompt in prompts:self.assert_renderer_visibility_contract(prompt)
+        self.assertTrue(any(suffix.startswith('_plan_repair_') for suffix,_ in plan_prompts))
+        self.assertEqual(prompts[0][0],'_timing_repair')
+        self.assertEqual(sum(suffix=='_review' for suffix,_ in prompts),1)
+        for _,prompt in plan_prompts+prompts:self.assert_renderer_visibility_contract(prompt)
 
     def test_documented_hidden_fields_match_actual_immersive_subtitles(self):
         from studio_render import write_subtitles

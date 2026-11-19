@@ -18,11 +18,12 @@ import uuid
 
 import paper_video as pv
 from studio_render import card
+from studio_chart_composition import COLUMN_CROP_SCHEMA,validate_column_crop,render_column_crop
 
 ROOT = pv.ROOT
 # Bump only when the material supplied to plan reviewers changes. This is
 # independent of story policy and never invalidates an existing video review.
-PLAN_REVIEW_CONTEXT_VERSION = 4
+PLAN_REVIEW_CONTEXT_VERSION = 5
 S = {'type': 'string'}
 DIAGRAM = pv.object_schema({
     'title':{'type':'string','maxLength':24},'note':{'type':'string','maxLength':24},
@@ -37,6 +38,8 @@ SHOT = pv.object_schema({'kind': {'type': 'string', 'enum': ['page', 'image', 'v
 SHOT['properties']['kind']['enum'].append('diagram')
 SHOT['properties']['diagram']={'anyOf':[{'type':'null'},DIAGRAM]}
 SHOT['required'].append('diagram')
+SHOT['properties']['column_crop']=COLUMN_CROP_SCHEMA
+SHOT['required'].append('column_crop')
 SCHEMA = pv.object_schema({'title': {'type': 'string', 'minLength': 1, 'maxLength': 18}, 'summary': S,
     'source_issues': pv.array_schema(S, 0, 20), 'unused_sources': pv.array_schema(S, 0, 100),
     'blocks': pv.array_schema(pv.object_schema({'id': {'type': 'string', 'pattern': '^[A-Za-z0-9_-]{1,24}$'},
@@ -259,7 +262,8 @@ shots.kind可为page（论文图裁切）、image（提供的图片）、video�
 开场和关键完整动作演示设置keep_full=true，确保实际成片不会为了迁就短口播而截掉动作；其他镜头keep_full=false。
 每段最多3镜头，第一镜头cue为空，之后cue必须在本段narration中唯一且按顺序出现。不能同一句多次切。
 优先使用真正对应的论文图和原片。论文无对应图、纯文案、文章讲解或无视频时允许card，card_text必须为本段的简洁解释，不能虚构实验图。
-page须4个bbox坐标；image可用bbox裁切表格中的相关部分，也可用[]保留整图；video/card/diagram的bbox=[]。裁切保留表头、图例，避免整张长表缩得过小。card/diagram的source_id为空，其他镜头必须引用实际的source_id。diagram的focus=[]、keep_full=false，card_text为空。
+page通常须4个bbox坐标；image可用bbox裁切表格中的相关部分，也可用[]保留整图；video/card/diagram的bbox=[]。裁切保留表头、图例，避免整张长表缩得过小。card/diagram的source_id为空，其他镜头必须引用实际的source_id。diagram的focus=[]、keep_full=false，card_text为空。
+column_crop通常为null。page/image遇到宽幅多栏图、条件或共用坐标轴远离目标数据列时，可用column_crop={{"y":[上,下],"columns":[[左,右],[左,右]]}}同尺度横向拼接2–6个源图竖条。坐标都相对完整原页/原图0–1，统一y高度至少0.05，每列宽至少0.01，按原图从左到右有序、不重叠；只删除无关列，保留条件/基线、当前比较列、必要坐标/单位/图例。可用3列保留左侧行标签、目标波形列、右侧共用轴，但须以实际源图确认各区域对应相同条件和刻度。拼接不改变各区比例、顺序或数据；程序在接缝显示断开标记，不把它称为连续原图。使用时bbox=[]、focus=[]，不能对video/card/diagram使用。不要臆造原图里没有的单位或标签，不要用拼接掩盖不同尺度、不同实验或不兼容的行。完整图用于核对上下文，实际拼接预览用于检查可读性。
 需要强调图表结果时可填写focus=[左,上,右,下]，坐标相对完整原页或原图，程序会在该区域加框；只框有依据的关键行/区域，不确定时focus=[]。视频和card的focus=[]。
 每段evidence引用支持本段的源文本source_id及逐字连续quote，不能编造引文。只要存在相关正文就尽量提供依据；仅在资料目录已有script来源时才可引用该来源，不得新增来源ID。
 视频和图片没有可核对的文字时，evidence允许为空，并在source_issues注明哪些内容缺少文本核验。用户文案如果与论文相冲突保留原文并明确列出问题。
@@ -288,7 +292,13 @@ def validate(plan, sources, original_script=''):
             shot.setdefault('keep_full',bi==0 and si==0 and shot.get('kind')=='video')
             shot.setdefault('focus',[])
             shot.setdefault('diagram',None)
-    errors = list(Draft202012Validator(SCHEMA).iter_errors(plan))
+    # Keep old saved plans byte-equivalent: the model schema requires the new
+    # nullable field, while legacy plans validate with a temporary null default.
+    import copy
+    schema_plan=copy.deepcopy(plan)
+    for block in schema_plan.get('blocks',[]):
+        for shot in block.get('shots',[]):shot.setdefault('column_crop',None)
+    errors = list(Draft202012Validator(SCHEMA).iter_errors(schema_plan))
     if errors: raise ValueError('分镜格式错误：' + '; '.join(e.message for e in errors[:4]))
     lookup = {s['id']: s for s in sources}; ids = set()
     if original_script and re.sub(r'\s', '', ''.join(b['narration'] for b in plan['blocks'])) != re.sub(r'\s', '', original_script):
@@ -302,6 +312,9 @@ def validate(plan, sources, original_script=''):
             if len(quote) < 4 or quote not in re.sub(r'\s', '', text): raise ValueError(f"{block['id']} 的来源引文不匹配正文。")
         previous = 0; narration = pv.normalize(block['narration'])
         for i, shot in enumerate(block['shots']):
+            columns=validate_column_crop(shot.get('column_crop'))
+            if columns is not None and (shot['kind'] not in ('page','image') or shot['bbox'] or shot['focus']):
+                raise ValueError('同尺度图表拼接只支持page/image，并须清空bbox与focus。')
             if len(shot['label']) > 26: raise ValueError('镜头标题过长。')
             if i:
                 cue = pv.normalize(shot['cue']); position = narration.find(cue)
@@ -328,7 +341,7 @@ def validate(plan, sources, original_script=''):
             if shot['kind'] == 'video':
                 if shot['in'] + shot['duration'] > source['duration_seconds'] + .01: raise ValueError('取片范围超出视频。')
                 if not any(shot['in'] <= t < shot['in'] + shot['duration'] for t in source['sample_times']): raise ValueError('视频镜头没有已观察的抽帧。')
-            if shot['kind'] == 'page' or (shot['kind']=='image' and shot['bbox']):
+            if columns is None and (shot['kind'] == 'page' or (shot['kind']=='image' and shot['bbox'])):
                 if len(shot['bbox']) != 4: raise ValueError(f"{block['id']} 第{i+1}个镜头：图表裁切需要4个坐标。")
                 x0,y0,x1,y1 = shot['bbox']
                 if x1-x0 < .08-1e-9 or y1-y0 < .05-1e-9:
@@ -354,7 +367,17 @@ def export(job, plan, sources, request):
             target = job / 'assets' / f'visual_{block_index:02}_{index:02}.png'
             source = lookup.get(original['source_id'], {})
             kind = original['kind']
-            if kind=='diagram':
+            columns=validate_column_crop(original.get('column_crop'))
+            if columns is not None:
+                if kind not in ('page','image') or original['bbox'] or original.get('focus'):
+                    raise ValueError('同尺度图表拼接只支持page/image，并须清空bbox与focus。')
+                image,composition=render_column_crop(source['file'],columns,
+                    page=source['page'] if kind=='page' else None,width=width,height=height)
+                image.save(target)
+                crops.append({'block_id':block['id'],'source_id':source['id'],
+                              'kind':'column_crop',**composition})
+                file,label=str(target),source.get('display_name',source.get('name','来源图'))[:52]
+            elif kind=='diagram':
                 file,label=str(job/'assets'/f'diagram_{block_index:02}_{index:02}.mp4'),'原理示意'
             elif kind == 'page':
                 with pymupdf.open(source['file']) as document:
@@ -383,7 +406,8 @@ def export(job, plan, sources, request):
                 file, label = str(target), '讲解卡片 · 非实验原图'
             shot = {'kind':kind if kind in ('video','diagram') else 'image','file':file,'duration':original['duration'],
                     'label':original['label'],'chapter':block['chapter'],'source':label,'summary':block['narration'],
-                    'keep_full':original.get('keep_full',False),'protect_content':kind in ('page','card')}
+                    'keep_full':original.get('keep_full',False),'protect_content':kind in ('page','card') or columns is not None}
+            if columns is not None:shot['column_composition']=composition
             if kind=='diagram':shot['diagram']=original['diagram']
             focus=original.get('focus',[])
             if focus and kind=='page':
@@ -464,11 +488,49 @@ def render(job):
         'project_sha256':file_hash(job/'project.json'),'video_sha256':file_hash(video)})
 
 
+def resume_pending_repair(job,request,action):
+    """Continue an already generated candidate before the original plan gate.
+
+    An unavailable candidate review must not cause another encode or be trapped
+    behind feedback that correctly rejects the original version.
+    """
+    if action not in ('render','review') or request.get('auto_repair',True) is False:return False
+    analysis=job/'analysis'
+    if not all((analysis/name).is_file() for name in ('studio_plan.json','sources.json')):return False
+    from studio_repair_budget import pending_attempt
+    plan=pv.load_json(analysis/'studio_plan.json');sources=pv.load_json(analysis/'sources.json')
+    pending_final=pending_attempt(job,plan,sources,request,'final')
+    pending_timing=None if pending_final else pending_attempt(job,plan,sources,request,'timing')
+    if pending_final is None and pending_timing is None:return False
+    if (job/'research.json').is_file():request['_research']=pv.load_json(job/'research.json')
+    validate(plan,sources)
+    from studio_delivery import final_review,export_formats
+    from studio_final_repair import repair_final_video
+    state=pv.load_json(job/'job.json');state.update(status='processing',stage='review',error=None)
+    pv.save_json(job/'job.json',state)
+    if pending_final:
+        final=pv.load_json(job/'output/final_review.json')
+        plan,final=repair_final_video(job,request,plan,sources,final)
+    else:
+        from studio_recovery import render_with_recovery
+        plan=render_with_recovery(job,request,plan,sources)
+        final={'ready':True}
+        if request.get('final_review',False):
+            final,_=final_review(job,request,plan,sources,call_ai,REVIEW_SCHEMA)
+            plan,final=repair_final_video(job,request,plan,sources,final)
+    export_formats(job,request.get('export_formats',['mp4','vtt','wav']))
+    state.update(status='completed' if final['ready'] else 'review_needed',stage='export',error=None,
+                 output=str(job/'output/video.mp4'))
+    state.pop('failed_action',None);pv.save_json(job/'job.json',state)
+    return True
+
+
 def execute(job, action='prepare'):
     state=pv.load_json(job/'job.json'); request=pv.load_json(job/'request.json'); analysis=job/'analysis'
     state.update(status='processing',stage=action,last_action=action,error=None)
     pv.save_json(job/'job.json',state)
     try:
+        if resume_pending_repair(job,request,action):return
         if action=='review':
             from studio_revision import review_stale
             from studio_delivery import final_review,export_formats
@@ -518,16 +580,33 @@ def execute(job, action='prepare'):
                 pv.log('【资料读取】深读论文与项目，建立可核验的研究笔记')
                 request['_research']=dossier(job,request,sources,images,call_ai,gaps)
             pv.log('【文稿与分镜】自动写稿与匹配镜头')
+            from studio_repair_budget import ensure_budget,register_plan
+            budget_origin=pv.load_json(analysis/'studio_plan.json') if (analysis/'studio_plan.json').is_file() else None
+            ensure_budget(job,budget_origin,sources,request)
             prompt=prompt_for(sources,images,request)
             plan=call_ai(prompt,[path for _,path in images],analysis,request,SCHEMA,'_studio')
             try:
                 validate(plan,sources,request.get('script','').strip())
                 validate_visual_policy(plan,request)
             except ValueError as exc:
-                pv.log('  计划未通过校验，自动修正一次')
-                plan=call_ai(prompt+'\n请修正上一版：'+json.dumps(plan,ensure_ascii=False)+'\n错误：'+str(exc),[p for _,p in images],analysis,request,SCHEMA,'_fix')
-                validate(plan,sources,request.get('script','').strip())
-                validate_visual_policy(plan,request)
+                from studio_repair_budget import reserve_attempt,finish_attempt
+                register_plan(job,budget_origin,plan,sources,request)
+                ticket=reserve_attempt(job,plan,sources,request,'schema',feedback={'validation_error':str(exc)})
+                if ticket is None:raise ValueError('自动返修额度已用完，请修改分镜后再试。') from exc
+                pv.log(f"  计划未通过校验，自动修正 {ticket['number']}/3")
+                fixed=None;phase='generation'
+                try:
+                    fixed=call_ai(prompt+'\n请修正上一版：'+json.dumps(plan,ensure_ascii=False)+'\n错误：'+str(exc),[p for _,p in images],analysis,request,SCHEMA,'_fix')
+                    phase='validation'
+                    validate(fixed,sources,request.get('script','').strip())
+                    validate_visual_policy(fixed,request)
+                except Exception as repair_error:
+                    finish_attempt(job,ticket,'invalid_candidate' if phase=='validation' else 'generation_failed',
+                                   candidate=fixed,reason=str(repair_error)[:1000],candidate_validated=False)
+                    raise
+                finish_attempt(job,ticket,'accepted',candidate=fixed,candidate_validated=True)
+                plan=fixed
+            register_plan(job,budget_origin,plan,sources,request)
             pv.save_json(analysis/'studio_plan.json',plan)
             pv.log('【文稿与分镜】复核事实、素材相关性与镜头安排')
             review=review_plan(job,plan,sources,request)
@@ -576,32 +655,8 @@ def execute(job, action='prepare'):
                 state['stage']='review';pv.save_json(job/'job.json',state)
                 pv.log('【成片与导出】成片复查：实际画面、叙事与时间安排')
                 final,frames=final_review(job,request,plan,sources,call_ai,REVIEW_SCHEMA)
-                if not final['ready'] and final.get('status') not in ('unavailable','incomplete') and request.get('auto_repair',True):
-                    pv.log('【成片与导出】针对成片问题自动返修一次')
-                    accepted=False
-                    previous_review=(job/'review.json').read_bytes() if (job/'review.json').is_file() else None
-                    try:
-                        images=pv.load_json(analysis/'images.json')
-                        repair_prompt=prompt_for(sources,images,request)+'\n对以下计划进行最小修正，解决成片审核的具体错误。保护用户文案，不用删除正确事实换取通过。\n计划：'+json.dumps(plan,ensure_ascii=False)+'\n审核：'+json.dumps(final,ensure_ascii=False)
-                        fixed=call_ai(repair_prompt,[Path(i[1]) for i in images],analysis,request,SCHEMA,'_render_repair')
-                        validate(fixed,sources,request.get('script','').strip())
-                        fixed_review=review_plan(job,fixed,sources,request)
-                        if fixed_review['ready'] and not any(i['severity']=='error' for i in fixed_review['issues']):
-                            pv.save_json(analysis/'plan_before_repair.json',plan);plan=fixed
-                            pv.save_json(analysis/'studio_plan.json',plan);accepted=True
-                            export(job,plan,sources,request)
-                            plan=render_with_recovery(job,request,plan,sources)
-                            final,_=final_review(job,request,plan,sources,call_ai,REVIEW_SCHEMA,2)
-                        else:
-                            final['repair_error']='修订计划未通过内容核验，保留上一版成片和问题。'
-                    except (ValueError,RuntimeError) as exc:
-                        final['repair_error']=str(exc)[:1000]
-                        pv.log('  自动修订未通过，保留待复核状态：'+str(exc)[:200])
-                    finally:
-                        if not accepted:
-                            if previous_review is not None:(job/'review.json').write_bytes(previous_review)
-                            elif (job/'review.json').is_file():(job/'review.json').unlink()
-                    pv.save_json(job/'output/final_review.json',final)
+                from studio_final_repair import repair_final_video
+                plan,final=repair_final_video(job,request,plan,sources,final)
                 state.update(status='completed' if final['ready'] else 'review_needed',output=str(job/'output/video.mp4'))
             else:state.update(status='completed',output=str(job/'output/video.mp4'))
             from studio_delivery import export_formats
