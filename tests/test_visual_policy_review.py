@@ -22,6 +22,15 @@ OK = {'ready': True, 'summary': 'Auditor response fixture, not a quality approva
 
 
 class VisualPolicyReviewTests(unittest.TestCase):
+    def assert_renderer_visibility_contract(self,prompt):
+        # This checks instructions crossing the model boundary, not whether
+        # an image passes visual review by containing particular words.
+        for rule in ('layout_style="immersive"', 'shot.label is not drawn',
+                     'protect_content=true', 'chapter is not drawn',
+                     'hidden metadata cannot restore missing axes, conditions or legends',
+                     'Do not change the user-selected aspect ratio or layout'):
+            self.assertIn(rule,prompt)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.job = Path(self.temp.name)
@@ -73,9 +82,60 @@ class VisualPolicyReviewTests(unittest.TestCase):
                     'layout_style', 'media_fit', 'show_sources', 'show_disclosure', 'minimal_text')}
                 self.assertEqual(len(prompts), 4)
                 for prompt in prompts:
+                    self.assert_renderer_visibility_contract(prompt)
                     line = next((line for line in prompt.splitlines() if line.startswith('视觉设置：')), None)
                     self.assertIsNotNone(line, 'A model stage lost the actual presentation settings')
                     self.assertEqual(json.loads(line.split('：', 1)[1]), expected)
+
+    def test_plan_and_timing_repairs_receive_visibility_rules_and_keep_rejected_candidate_out(self):
+        from studio_plan_repair import repair_plan_once
+        from studio_recovery import render_with_recovery
+        from studio_revision import file_hash
+        sources=[{'id':'figure','type':'image','name':'Source comparison','file':str(self.frame)}]
+        plan={'title':'Comparison','summary':'Source conditions matter.','source_issues':[],'unused_sources':[],
+              'blocks':[{'id':'scope','chapter':'Comparison','narration':'Compare the two recorded conditions.',
+                         'evidence':[],'shots':[{'kind':'image','source_id':'figure','in':0,'duration':4,
+                         'bbox':[0,0,1,1],'focus':[],'keep_full':False,'label':'Comparison','card_text':'','cue':''}]}]}
+        engine.validate(plan,sources)
+        candidate=copy.deepcopy(plan);candidate['blocks'][0]['shots'][0]['label']='Condition A / B'
+        # The independent auditor fixture rejects a metadata-only repair.
+        # It does not pretend the mock candidate restored visible source pixels.
+        rejected={'ready':False,'summary':'The missing conditions remain absent.','issues':[
+            {'severity':'error','block_id':'scope','reason':'The crop lacks the conditions needed for the promised comparison; the changed label is hidden in this layout.'}]}
+        request={**self.request,'auto_repair':True,'script':plan['blocks'][0]['narration']}
+        pv.save_json(self.job/'analysis/studio_plan.json',plan);pv.save_json(self.job/'review.json',rejected)
+        original=(self.job/'analysis/studio_plan.json').read_bytes();prompts=[]
+        def ai(prompt,images,analysis,request,schema,suffix):
+            prompts.append((suffix,prompt))
+            return copy.deepcopy(rejected if suffix=='_review' else candidate)
+        with patch('studio_engine.call_ai',side_effect=ai),patch('paper_video.log'):
+            repaired,review=repair_plan_once(self.job,plan,sources,request,rejected)
+        self.assertEqual(repaired,plan);self.assertFalse(review['ready'])
+        self.assertEqual((self.job/'analysis/studio_plan.json').read_bytes(),original)
+        def needs_more_visuals(job):
+            pv.save_json(job/'output/timing_recovery.json',{'status':'needs_more_visuals',
+                'code':'insufficient_visual_duration','project_sha256':file_hash(job/'project.json'),
+                'issues':[{'block_id':'scope','shot_index':0,'missing_seconds':1}]})
+            raise RuntimeError('Measured timing diagnostic fixture')
+        with patch('studio_engine.call_ai',side_effect=ai),patch('studio_engine.render',side_effect=needs_more_visuals),patch('paper_video.log'):
+            with self.assertRaisesRegex(ValueError,'未通过内容审核'):
+                render_with_recovery(self.job,request,plan,sources)
+        self.assertEqual((self.job/'analysis/studio_plan.json').read_bytes(),original)
+        self.assertEqual(len(prompts),4)
+        self.assertTrue(prompts[0][0].startswith('_plan_repair_'))
+        self.assertEqual(prompts[2][0],'_timing_repair')
+        for _,prompt in prompts:self.assert_renderer_visibility_contract(prompt)
+
+    def test_documented_hidden_fields_match_actual_immersive_subtitles(self):
+        from studio_render import write_subtitles
+        work=self.job/'subtitle_work';work.mkdir()
+        shot={'start':0,'end':4,'protect_content':True,'label':'HIDDEN_LABEL',
+              'chapter':'HIDDEN_CHAPTER','source':'Source metadata'}
+        write_subtitles(self.job/'output',work,'Arial','TITLE',[shot],[(0,4,'Visible narration')],
+                        4,1600,1000,self.request)
+        ass=(work/'captions.ass').read_text('utf-8')
+        self.assertNotIn('HIDDEN_LABEL',ass);self.assertNotIn('HIDDEN_CHAPTER',ass)
+        self.assertIn('Visible narration',ass)
 
     def test_source_page_violation_survives_review_and_blocks_release(self):
         issue = {'severity': 'error', 'block_id': 'scope', 'reason':

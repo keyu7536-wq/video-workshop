@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -242,7 +243,14 @@ class RenderRecoveryTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.receipt()
                 if change=='voice':pv.save_json(self.job/'request.json',{'voice':'different'})
-                else:(self.job/'output/video.mp4').write_bytes(b'different encoded content')
+                else:
+                    video=self.job/'output/video.mp4';before=video.stat()
+                    video.write_bytes(b'different encoded content')
+                    # Reproduce same-size writes whose modification timestamp
+                    # is retained/coarsened, without relying on CI timing.
+                    os.utime(video,ns=(before.st_atime_ns,before.st_mtime_ns))
+                    self.assertEqual((video.stat().st_size,video.stat().st_mtime_ns),
+                                     (before.st_size,before.st_mtime_ns))
                 with patch('studio_delivery.final_review') as review:
                     with self.assertRaisesRegex(ValueError,'与成片不一致'):engine.execute(self.job,'review')
                 review.assert_not_called()

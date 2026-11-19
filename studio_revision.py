@@ -1,7 +1,6 @@
 """Bind reviews to the settings and bytes actually reviewed."""
 import hashlib
 import json
-from functools import lru_cache
 import paper_video as pv
 from studio_display import DISPLAY_KEYS
 
@@ -17,16 +16,13 @@ def render_settings_hash(request):
         settings['duration_settings']=duration
     return hashlib.sha256(json.dumps(settings,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
-@lru_cache(maxsize=32)
-def _hash_file(path,size,mtime_ns):
+def file_hash(path):
+    # Metadata is not a content identity: same-size writes can retain/coarsen
+    # mtime (notably on Windows). Review/export guards must hash current bytes.
     digest=hashlib.sha256()
     with open(path,'rb') as stream:
         for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
     return digest.hexdigest()
-
-def file_hash(path):
-    stat=path.stat()
-    return _hash_file(str(path.resolve()),stat.st_size,stat.st_mtime_ns)
 
 def review_stale(job,review,plan_hash):
     video=job/'output/video.mp4';project=job/'project.json'

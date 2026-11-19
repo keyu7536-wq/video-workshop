@@ -68,6 +68,33 @@ class RefinementTests(unittest.TestCase):
             video.write_bytes(b'changed video')
             self.assertTrue(review_stale(job,review,'plan'))
 
+    def test_same_size_timestamp_changes_invalidate_actual_bytes_and_export_receipt(self):
+        import hashlib,os
+        from studio_engine import plan_hash
+        from studio_revision import export_version_current
+        for changed_file,replacement in [('output/video.mp4',b'other bytes'),('project.json',b'{"value":2}')]:
+            with self.subTest(changed_file=changed_file),tempfile.TemporaryDirectory() as folder:
+                job=Path(folder);(job/'output').mkdir();(job/'analysis').mkdir()
+                pv.save_json(job/'request.json',{})
+                plan={'blocks':[]};pv.save_json(job/'analysis/studio_plan.json',plan)
+                (job/'project.json').write_bytes(b'{"value":1}')
+                (job/'output/video.mp4').write_bytes(b'first bytes')
+                review={'plan_hash':plan_hash(plan),'settings_hash':render_settings_hash({}),
+                        'project_sha256':file_hash(job/'project.json'),
+                        'video_sha256':file_hash(job/'output/video.mp4')}
+                pv.save_json(job/'output/render_receipt.json',review)
+                self.assertFalse(review_stale(job,review,plan_hash(plan)))
+                self.assertTrue(export_version_current(job))
+                target=job/changed_file;before=target.stat();old_hash=file_hash(target)
+                target.write_bytes(replacement)
+                os.utime(target,ns=(before.st_atime_ns,before.st_mtime_ns))
+                after=target.stat()
+                self.assertEqual((before.st_size,before.st_mtime_ns),(after.st_size,after.st_mtime_ns))
+                self.assertNotEqual(hashlib.sha256(replacement).hexdigest(),old_hash)
+                self.assertEqual(file_hash(target),hashlib.sha256(replacement).hexdigest())
+                self.assertTrue(review_stale(job,review,plan_hash(plan)))
+                self.assertFalse(export_version_current(job))
+
     def test_editorial_prefix_is_removed_from_saved_plan_overlay(self):
         from studio_render import write_subtitles
         with tempfile.TemporaryDirectory() as folder:
