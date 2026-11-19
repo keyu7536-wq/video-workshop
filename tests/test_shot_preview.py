@@ -178,6 +178,172 @@ class ShotPreviewTests(unittest.TestCase):
             response=self.page.request.post(self.base+'/api/create',data={'article':'测试','from_job':self.job.name,'reuse_files':selection})
             self.assertEqual(response.status,400,response.text())
 
+    def test_new_adaptive_task_uses_app_rate_and_keeps_numeric_target_memory(self):
+        self.page.route('**/api/app-config',lambda route:route.fulfill(json={
+            'name':'视频工坊','default_voice':'zh-CN-YunyangNeural','default_rate':'+25%'}))
+        self.page.goto(self.base,wait_until='networkidle')
+        self.assertEqual(self.page.locator('#seconds').input_value(),'auto')
+        self.assertTrue(self.page.locator('#speechRate').is_visible())
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+25%')
+        self.page.locator('#seconds').select_option('120');self.page.locator('#seconds').select_option('auto')
+        self.page.locator('#voice').select_option('zh-CN-XiaoxiaoNeural')
+        self.page.locator('#article').fill('这是一篇提供给程序生成讲解的文章。')
+        with self.page.expect_response(lambda response:response.url.endswith('/api/create')) as response:
+            self.page.locator('#createButton').click()
+        self.assertEqual(response.value.status,200,response.value.text())
+        request=pv.load_json(self.root/'jobs'/response.value.json()['job_id']/'request.json')
+        self.assertEqual((request['duration_mode'],request['seconds']),('adaptive',120))
+        self.assertEqual((request['voice'],request['rate']),('zh-CN-XiaoxiaoNeural','+25%'))
+        self.assertEqual(self.errors,[])
+
+    def test_legacy_target_and_zero_rate_restore_and_rate_controls_send_real_speech(self):
+        self.request.update(seconds=137,rate='+0%',voice='zh-CN-YunxiNeural')
+        pv.save_json(self.job/'request.json',self.request);self.open_job()
+        self.assertEqual(self.page.locator('#seconds').input_value(),'137')
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+0%')
+        self.assertEqual(self.page.locator('#voice').input_value(),'zh-CN-YunxiNeural')
+        self.page.locator('[data-tab="create"]').click();self.page.locator('#speechRate').select_option('+25%')
+        self.page.locator('#openSettings').click()
+        self.assertEqual(self.page.locator('#rate').input_value(),'+25%')
+        self.page.locator('#rate').select_option('+10%');self.page.locator('#settingsForm button[type="submit"]').click()
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+10%')
+        with self.page.expect_response(lambda response:response.url.endswith('/api/render')) as response:
+            self.page.locator('#regenerateDisplay').click()
+        self.assertEqual(response.value.status,200,response.value.text())
+        payload=response.value.request.post_data_json
+        self.assertEqual((payload['duration_mode'],payload['seconds']),('target',137))
+        self.assertEqual(payload['speech'],{'voice':'zh-CN-YunxiNeural','rate':'+10%'})
+        saved=pv.load_json(self.job/'request.json')
+        self.assertEqual((saved['voice'],saved['rate']),('zh-CN-YunxiNeural','+10%'))
+        self.assertEqual(self.errors,[])
+
+    def test_task_without_stored_seconds_keeps_legacy_backend_default_on_save(self):
+        self.request.pop('seconds');pv.save_json(self.job/'request.json',self.request)
+        self.open_job()
+        self.assertEqual(self.page.locator('#seconds').input_value(),'100')
+        with self.page.expect_response(lambda response:response.url.endswith('/api/plan')) as response:
+            self.page.locator('#savePlan').click()
+        self.assertEqual(response.value.status,200,response.value.text())
+        saved=pv.load_json(self.job/'request.json')
+        self.assertEqual((saved['duration_mode'],saved['seconds']),('target',100))
+        self.assertNotIn('_duration_revision',saved)
+
+    def test_adaptive_task_restores_target_memory_and_mode_edit_preserves_text(self):
+        self.request.update(duration_mode='adaptive',seconds=180)
+        pv.save_json(self.job/'request.json',self.request);self.open_job()
+        self.assertEqual(self.page.locator('#seconds').input_value(),'auto')
+        original=[block['narration'] for block in self.plan['blocks']]
+        self.page.locator('[data-tab="create"]').click();self.page.locator('#seconds').select_option('180')
+        self.page.locator('[data-tab="editor"]').click()
+        self.assertIn('时长设置待复核',self.page.locator('#reviewBanner').inner_text())
+        with self.page.expect_response(lambda response:response.url.endswith('/api/plan')) as response:
+            self.page.locator('#savePlan').click()
+        self.assertEqual(response.value.status,200,response.value.text())
+        saved=pv.load_json(self.job/'request.json')
+        self.assertEqual((saved['duration_mode'],saved['seconds']),('target',180))
+        self.assertTrue(saved.get('_duration_revision'))
+        self.assertEqual([block['narration'] for block in pv.load_json(self.job/'analysis/studio_plan.json')['blocks']],original)
+        self.page.reload(wait_until='networkidle');self.assertEqual(self.page.locator('#seconds').input_value(),'180')
+        self.assertEqual(self.errors,[])
+
+    def test_qwen_disables_percentage_rate_without_losing_edge_preference(self):
+        self.open_job();self.page.locator('[data-tab="create"]').click()
+        self.page.locator('#speechRate').select_option('+25%')
+        self.page.locator('#voice').select_option('qwen:Dylan')
+        self.assertTrue(self.page.locator('#speechRate').is_disabled())
+        self.assertIn('不使用百分比语速',self.page.locator('#speechRateHint').inner_text())
+        self.page.locator('#openSettings').click()
+        self.assertTrue(self.page.locator('#rate').is_disabled())
+        self.page.locator('#settingsForm button[type="submit"]').click()
+        self.page.locator('#voice').select_option('zh-CN-YunyangNeural')
+        self.assertFalse(self.page.locator('#speechRate').is_disabled())
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+25%')
+        self.assertEqual(self.errors,[])
+
+    def test_rendered_voice_rate_and_duration_do_not_change_with_pending_controls(self):
+        self.request.update(voice='zh-CN-YunyangNeural',rate='+50%')
+        pv.save_json(self.job/'request.json',self.request);self.make_render()
+        report=pv.load_json(self.job/'output/run_report.json');report.update(voice='zh-CN-YunyangNeural',rate='+50%')
+        pv.save_json(self.job/'output/run_report.json',report);self.open_job()
+        actual=self.page.locator('#outputMeta').inner_text()
+        self.assertIn('5.0 秒',actual);self.assertIn('云扬',actual);self.assertIn('+50%',actual)
+        self.page.locator('[data-tab="create"]').click()
+        self.page.locator('#voice').select_option('zh-CN-YunxiNeural');self.page.locator('#speechRate').select_option('+10%')
+        self.page.locator('[data-tab="output"]').click()
+        self.assertEqual(self.page.locator('#outputMeta').inner_text(),actual)
+        pending=self.page.locator('#outputSpeechSettings').inner_text()
+        self.assertIn('待重新生成',pending);self.assertIn('云希',pending);self.assertIn('+10%',pending)
+        self.assertEqual(pv.load_json(self.job/'request.json')['rate'],'+50%')
+        self.assertEqual(self.errors,[])
+
+    def test_explicit_saved_zero_rate_and_old_negative_rate_are_not_replaced_by_default(self):
+        self.page.add_init_script("localStorage.setItem('video-workshop-settings',JSON.stringify({workflow_version:1,rate:'+0%'}))")
+        self.page.goto(self.base,wait_until='networkidle')
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+0%')
+        self.request.update(rate='-5%');pv.save_json(self.job/'request.json',self.request)
+        self.open_job()
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'-5%')
+        self.page.locator('#openSettings').click();self.assertEqual(self.page.locator('#rate').input_value(),'-5%')
+        self.assertEqual(self.errors,[])
+
+    def test_speech_changes_never_enable_export_while_narration_is_unsaved(self):
+        self.make_render();self.open_job()
+        self.assertFalse(self.page.locator('#exportButton').is_disabled())
+        self.page.locator('[data-tab="editor"]').click()
+        self.page.locator('[data-narration="0"]').fill('先看动作，再看变化。还需要修改解释。')
+        self.assertTrue(self.page.locator('#exportButton').is_disabled())
+        self.page.evaluate('''window.unsafeExport=false;
+            new MutationObserver(()=>{if(state.dirty&&!document.querySelector('#exportButton').disabled)window.unsafeExport=true;})
+            .observe(document.querySelector('#exportButton'),{attributes:true,attributeFilter:['disabled']});''')
+        self.page.locator('[data-tab="create"]').click();self.page.locator('#speechRate').select_option('+25%')
+        self.assertTrue(self.page.locator('#exportButton').is_disabled())
+        self.page.locator('#voice').select_option('zh-CN-YunxiNeural')
+        self.assertTrue(self.page.locator('#exportButton').is_disabled())
+        self.page.locator('#openSettings').click();self.page.locator('#rate').select_option('+10%')
+        self.page.locator('#settingsForm button[type="submit"]').click()
+        self.assertTrue(self.page.locator('#exportButton').is_disabled())
+        self.assertFalse(self.page.evaluate('window.unsafeExport'))
+        self.assertTrue(self.page.evaluate('state.dirty'))
+        self.http.manager.start.assert_not_called()
+        self.assertEqual(self.errors,[])
+
+    def test_missing_task_speech_uses_saved_preference_or_app_default_not_previous_task(self):
+        self.request.update(rate='+0%',voice='zh-CN-YunxiNeural')
+        pv.save_json(self.job/'request.json',self.request)
+        other=self.root/'jobs'/('without_speech_'+self._testMethodName);(other/'analysis').mkdir(parents=True)
+        request={key:value for key,value in self.request.items() if key not in ('rate','voice')}
+        for name,data in [('request.json',request),('job.json',{'engine':'studio','status':'prepared'}),
+                          ('analysis/studio_plan.json',self.plan),('analysis/sources.json',pv.load_json(self.job/'analysis/sources.json'))]:
+            pv.save_json(other/name,data)
+        self.page.route('**/api/app-config',lambda route:route.fulfill(json={
+            'name':'视频工坊','default_voice':'zh-CN-YunyangNeural','default_rate':'+50%'}))
+        self.page.goto(self.base,wait_until='networkidle')
+        self.page.evaluate("localStorage.setItem('video-workshop-settings',JSON.stringify({workflow_version:1,rate:'+25%'}))")
+        self.page.locator(f'[data-job="{self.job.name}"]').click()
+        self.page.wait_for_function('state.job?.request?.rate === "+0%"')
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+0%')
+        self.assertEqual(self.page.locator('#voice').input_value(),'zh-CN-YunxiNeural')
+        self.page.locator(f'[data-job="{other.name}"]').click()
+        self.page.wait_for_function('(id)=>state.job?.id===id',arg=other.name)
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+25%')
+        self.assertEqual(self.page.locator('#rate').input_value(),'+25%')
+        self.assertEqual(self.page.locator('#voice').input_value(),'zh-CN-YunyangNeural')
+        self.page.evaluate("localStorage.removeItem('video-workshop-settings')")
+        self.page.locator(f'[data-job="{self.job.name}"]').click()
+        self.page.wait_for_function('state.job?.request?.rate === "+0%"')
+        self.page.locator(f'[data-job="{other.name}"]').click()
+        self.page.wait_for_function('(id)=>state.job?.id===id',arg=other.name)
+        self.assertEqual(self.page.locator('#speechRate').input_value(),'+50%')
+        self.assertEqual(self.page.locator('#rate').input_value(),'+50%')
+        self.assertEqual(self.page.locator('#voice').input_value(),'zh-CN-YunyangNeural')
+        with self.page.expect_response(lambda response:response.url.endswith('/api/render')) as response:
+            self.page.locator('#renderButton').click()
+        self.assertEqual(response.value.status,200,response.value.text())
+        self.assertEqual(response.value.request.post_data_json['speech'],{'voice':'zh-CN-YunyangNeural','rate':'+50%'})
+        self.assertEqual(pv.load_json(self.job/'request.json')['rate'],'+0%')
+        self.http.manager.start.assert_called_once_with(other,'render','')
+        self.assertEqual(self.errors,[])
+
     def test_explicit_repair_choice_is_persisted_when_rendering(self):
         response=self.page.request.post(self.base+'/api/render',data={'job_id':self.job.name,'auto_repair':True,'final_review':True})
         self.assertEqual(response.status,200,response.text())

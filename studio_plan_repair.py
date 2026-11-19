@@ -140,6 +140,10 @@ def repair_fingerprint(plan, sources, request):
     keys=('brief','script','article','seconds','content_type','delivery_scope',
           'voice','rate','voice_style','backend','api_base','model',*DISPLAY_KEYS)
     settings={key:request.get(key) for key in keys}
+    from studio_duration import effective_duration_settings
+    if effective_duration_settings(request)['duration_mode']=='adaptive':
+        settings.pop('seconds',None)
+        settings['duration_mode']='adaptive'
     settings['content_type']=request.get('content_type','auto')
     settings['story_framework']=normalize_framework(request.get('story_framework'))
     clean_sources=[{key:value for key,value in source.items()

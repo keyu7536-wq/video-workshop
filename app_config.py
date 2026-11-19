@@ -4,13 +4,13 @@ import os
 from pathlib import Path
 
 APP_ID = 'video-workshop'
-VERSION = '0.3.1'
-PROTOCOL_VERSION = 12
+VERSION = '0.3.2'
+PROTOCOL_VERSION = 13
 ROOT = Path(__file__).resolve().parent
 
 def load_config():
     config = {'name':'视频工坊','version':VERSION,'default_voice':'zh-CN-YunyangNeural',
-              'default_rate':'+0%','port':8780,'reference_available':False}
+              'default_rate':'+50%','port':8780,'reference_available':False}
     path = Path(os.environ.get('VIDEO_WORKSHOP_CONFIG', str(ROOT/'app.local.json')))
     if path.is_file():
         values = json.loads(path.read_text(encoding='utf-8'))

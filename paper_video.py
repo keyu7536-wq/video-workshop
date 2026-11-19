@@ -28,9 +28,37 @@ def log(text):
 
 
 def save_json(path, value):
-    temp = path.with_suffix(path.suffix + '.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temp.replace(path)
+    path=Path(path)
+    payload=json.dumps(value,ensure_ascii=False,indent=2)
+    temp=path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    created=False;failure=None
+    try:
+        # Exclusive creation prevents concurrent writers sharing an incomplete
+        # temporary file. Close the complete payload before atomic replacement.
+        with temp.open('x',encoding='utf-8') as stream:
+            created=True
+            stream.write(payload)
+        delays=(.01,.02,.04,.08,.16,.20)
+        for attempt in range(len(delays)+1):
+            try:
+                temp.replace(path)
+                break
+            except OSError as exc:
+                # Windows readers commonly deny delete-sharing briefly. Never
+                # retry other I/O errors, or turn permanent denial into success.
+                if (os.name!='nt' or getattr(exc,'winerror',None) not in (5,32,33)
+                        or attempt==len(delays)):
+                    raise
+                time.sleep(delays[attempt])
+    except BaseException as exc:
+        failure=exc
+        raise
+    finally:
+        if created:
+            try:temp.unlink(missing_ok=True)
+            except OSError as exc:
+                if failure is None:raise
+                failure.add_note(f'无法清理本次临时文件 {temp.name}: {exc}')
 
 
 def load_json(path):
@@ -280,38 +308,51 @@ def call_codex(prompt, images, analysis, suffix='', timeout=900, schema=None):
     schema_path = analysis / 'plan_schema.json'
     save_json(schema_path, schema or PLAN_SCHEMA)
     result_path = analysis / f'codex_result{suffix}.json'
+    pending_result = analysis / f'.codex_result{suffix}.{uuid.uuid4().hex}.json'
     command = [find_codex(), 'exec', '--skip-git-repo-check', '--ephemeral',
                '--ignore-user-config', '--sandbox', 'read-only', '--color', 'never',
-               '--output-schema', str(schema_path), '--output-last-message', str(result_path)]
+               '--output-schema', str(schema_path), '--output-last-message', str(pending_result)]
     for path in images:
         command.extend(['--image', str(path)])
     command.append('-')
     (analysis / f'prompt{suffix}.txt').write_text(prompt, encoding='utf-8')
     log('  Codex 正在复核实际成片……' if suffix.startswith('_final_') else '  Codex 正在分析本阶段的资料与画面……')
     # Log to disk: some accounts print detailed service errors; never echo credentials.
-    with (analysis / f'codex{suffix}.log').open('wb') as stream:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=stream, stderr=stream,
-                                   cwd=analysis, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    try:
+        with (analysis / f'codex{suffix}.log').open('wb') as stream:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=stream, stderr=stream,
+                                       cwd=analysis, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            try:
+                process.stdin.write(prompt.encode('utf-8'))
+                process.stdin.close()
+                process.stdin = None
+                deadline = time.monotonic() + timeout
+                next_update = time.monotonic() + 30
+                while process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('Codex 分析超时，可使用 --resume 重试。')
+                    if time.monotonic() >= next_update:
+                        log('  仍在分析；本阶段结果会自动保存，最长等待15分钟。')
+                        next_update = time.monotonic() + 30
+                    time.sleep(1)
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+        if process.returncode or not pending_result.is_file():
+            raise RuntimeError(f'Codex 本次未返回有效计划，请查看 {analysis / ("codex" + suffix + ".log")}；确认 CLI 已登录、网络和账户额度正常。')
         try:
-            process.stdin.write(prompt.encode('utf-8'))
-            process.stdin.close()
-            process.stdin = None
-            deadline = time.monotonic() + timeout
-            next_update = time.monotonic() + 30
-            while process.poll() is None:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('Codex 分析超时，可使用 --resume 重试。')
-                if time.monotonic() >= next_update:
-                    log('  仍在分析；本阶段结果会自动保存，最长等待15分钟。')
-                    next_update = time.monotonic() + 30
-                time.sleep(1)
-        except BaseException:
-            process.kill()
-            process.wait()
-            raise
-    if process.returncode or not result_path.is_file():
-        raise RuntimeError(f'Codex 未返回有效计划，请查看 {analysis / ("codex" + suffix + ".log")}；确认 CLI 已登录、网络和账户额度正常。')
-    return load_json(result_path)
+            result=load_json(pending_result)
+        except (OSError,ValueError,UnicodeError):
+            raise RuntimeError(f'Codex 本次结果不是可读取的 JSON 对象，请查看 {analysis / ("codex" + suffix + ".log")}。') from None
+        if not isinstance(result,dict):
+            raise RuntimeError('Codex 本次结果必须是 JSON 对象，未使用之前的输出。')
+        # Only a fresh, successful response replaces the diagnostic result.
+        # An old approval can never be rebound to a different current plan.
+        save_json(result_path,result)
+        return result
+    finally:
+        pending_result.unlink(missing_ok=True)
 
 
 def normalize(text):

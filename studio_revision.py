@@ -11,6 +11,10 @@ def render_settings_hash(request):
     settings={k:request.get(k) for k in keys}
     settings.update(story_framework=normalize_framework(request.get('story_framework')),story_policy_version=STORY_POLICY_VERSION)
     if request.get('_brief_revision') is not None:settings['_brief_revision']=request['_brief_revision']
+    from studio_duration import effective_duration_settings
+    duration=effective_duration_settings(request)
+    if duration['duration_mode']=='adaptive' or request.get('_duration_revision') is not None:
+        settings['duration_settings']=duration
     return hashlib.sha256(json.dumps(settings,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 @lru_cache(maxsize=32)

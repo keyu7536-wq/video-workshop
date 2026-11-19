@@ -75,6 +75,7 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     from studio_story import story_instruction
     from studio_context import context_sources
     from studio_display import effective_display_settings
+    from studio_duration import effective_duration_settings,duration_instruction
     visual_settings=effective_display_settings(request)
     research=request.get('_research') or (pv.load_json(job/'research.json') if (job/'research.json').is_file() else {})
     model_sources=context_sources(sources,research,evidence=[e for b in plan['blocks'] for e in b['evidence']],current_script=request.get('script'))
@@ -85,7 +86,8 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
         raise RuntimeError('找不到可审核的成片，请先完成视频合成。')
     video_hash=file_hash(video)
     versions={'video_sha256':video_hash,'plan_hash':plan_hash(plan),
-        'settings_hash':render_settings_hash(request),'project_sha256':file_hash(job/'project.json')}
+        'settings_hash':render_settings_hash(request),'project_sha256':file_hash(job/'project.json'),
+        'duration_settings':effective_duration_settings(request)}
     frames=review_frames(job)
     if not frames:raise RuntimeError('成片抽帧为空，无法进行实际画面审核。')
     for frame in frames:
@@ -102,9 +104,9 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     context+='\n审核版本：'+json.dumps({'video_sha256':video_hash,'plan_hash':plan_hash(plan)},ensure_ascii=False)
     context+='\n完整镜头时间线：'+json.dumps(pv.load_json(job/'output/rendered_shots.json'),ensure_ascii=False)
     context+='\n实际抽帧覆盖范围（不得声称看过 omitted_shot_indices 中的镜头）：'+json.dumps(sampling_coverage,ensure_ascii=False)
-    context+='\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),'seconds':request.get('seconds',100)},ensure_ascii=False)
+    context+='\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),**effective_duration_settings(request)},ensure_ascii=False)
     context+='\n视觉设置：'+json.dumps(visual_settings,ensure_ascii=False)
-    context+='\n时长约定：界面seconds是约定目标，不是严格上限；实际片长随配音与完整动作调整。除非创作要求明确要求不得超过某秒数，不得仅因实际秒数略高于目标而判error或ready=false。可以提出具体节奏建议作为warning。'
+    context+='\n'+duration_instruction(request,'review')
     for name,focus in [('visual','检查实际编码画面：图表裁切/字号、遮挡、字幕、画面与所述观点对应。给具体秒数。按视觉设置核对少文字要求，page/image中的论文正文和网页截图也属于文字画面。检查所讲动作、对象或比较是否实际可辨，不能把背景铺满、加高亮框或整条拼图横向铺满当成主体已经变大。对于明确违反少文字要求的正文墙，或缩略图条使本镜头关键行为/关系不可辨的情况，给出error并说明时间、block_id、可见内容、实际停留及其与旁白的冲突；不能只写“字号小”的审美warning。单凭静态、超宽或主体面积比例不判错，可读的图表、简短必要引用及只影响次要标签的瑕疵按实际影响判断。'),
                        ('story','按内容类型、受众与实际片长检查主体意思、必要解释、衔接、信息负荷和逐段真实配音时长/静默余量。论文涉及的问题、方法和效果应交代清楚，轻重与顺序可以调整；普通内容按其题材检查。不能声称听过音频，不评价未知发音。')]:
         focus+=' 内容类型：'+request.get('content_type','auto')+'。确为论文时按其实际贡献类型核对身份和相关机制/证据；综述、理论或观察论文不强制要求算法或对照实验。普通文章、给定文案和纯素材讲解按其实际主题与资料核查，不得要求编造研究。'

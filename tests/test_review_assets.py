@@ -1,5 +1,6 @@
 """Review receives images for manually selected pages, not just intake samples."""
 import json
+import copy
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,18 +44,90 @@ class ReviewAssetsTests(unittest.TestCase):
             return {'ready': True, 'summary': 'Fixture response, not a quality judgment.', 'issues': []}
         with patch.object(engine, 'call_ai', side_effect=reviewer):
             engine.review_plan(self.job, self.plan, self.sources, {'content_type': 'general'})
-        # Full page, exact crop, and the existing optional intake sample.
-        self.assertEqual(len(seen['images']), 3)
+        # Full page, exact crop, actual-canvas preview, and optional intake sample.
+        self.assertEqual(len(seen['images']), 4)
         with Image.open(seen['images'][0]) as image:
             self.assertEqual(image.convert('RGB').getpixel((10, 10)), (0, 0, 255))
         with Image.open(seen['images'][1]) as image:
             self.assertEqual(image.convert('RGB').getpixel((10, 10)), (0, 0, 255))
         self.assertIn('实际裁图', seen['prompt'])
         self.assertIn('p3', seen['prompt'])
+        self.assertIn('构图预览', seen['prompt'])
         manifest = pv.load_json(self.job / 'analysis/review_assets.json')
         self.assertEqual(manifest['selected_source_ids'], ['p3'])
         self.assertEqual(manifest['crops'][0]['bbox'], [.2, .2, .8, .8])
         self.assertEqual(self.sources[0].get('preview'), None, 'Intake provenance is not rewritten')
+
+    def test_pdf_composition_matches_export_focus_and_protected_canvas_geometry(self):
+        from studio_render import media_geometry
+        # A word intersects the left edge; panel_clip must shift both the crop
+        # and its focus coordinates exactly as the actual export does.
+        paper=self.job/'word_boundary.pdf'
+        with pymupdf.open() as doc:
+            page=doc.new_page(width=200,height=200)
+            page.draw_rect(page.rect,color=(0,0,1),fill=(0,0,1))
+            page.insert_text((39,80),'Boundary',fontsize=8)
+            doc.save(paper)
+        self.sources[0].update(file=str(paper),page=1)
+        shot=self.plan['blocks'][0]['shots'][0]
+        shot.update(focus=[.3,.3,.7,.7],duration=4,label='Figure',cue='',keep_full=False,card_text='',**{'in':0})
+        request={'format':'custom','width':1000,'height':1600,'layout_style':'immersive','media_fit':'cover'}
+        before=paper.read_bytes();original=copy.deepcopy(self.plan)
+        images,scope=prepare_review_assets(self.job,self.plan,self.sources,[],request=request)
+        item=scope['compositions'][0]
+        self.assertEqual(item['fit'],'contain');self.assertTrue(item['protect_content'])
+        expected=list(media_geometry(1000,1600,request,True));expected[2]-=expected[2]%2;expected[3]-=expected[3]%2
+        self.assertEqual(item['media_box'],expected)
+        self.assertEqual(item['canvas'],[1000,1600])
+        self.assertLess(item['image_canvas_area_ratio'],1)
+        self.assertGreater(item['focus_canvas_area_ratio'],0)
+        (self.job/'assets').mkdir()
+        plan={**self.plan,'title':'Figure','summary':'A figure.','source_issues':[],'unused_sources':[]}
+        plan['blocks'][0]['chapter']='Figure'
+        config=engine.export(self.job,plan,self.sources,request)
+        actual=config['blocks'][0]['shots'][0]
+        for a,b in zip(item['focus_crop_normalized'],actual['focus']):self.assertAlmostEqual(a,b,places=7)
+        with Image.open(item['path']) as image:
+            self.assertEqual(image.size,(1000,1600))
+            self.assertEqual(image.getpixel((0,0)),(8,14,21))
+            x,y,_,_=item['focus_rect']
+            self.assertEqual(image.getpixel((int(x)+1,int(y)+1)),(84,214,189))
+        self.assertEqual(paper.read_bytes(),before)
+        self.assertEqual(self.plan['blocks'][0]['shots'],original['blocks'][0]['shots'])
+
+    def test_image_crop_focus_and_cover_are_separate_from_source_selection(self):
+        image_path=self.job/'wide.png';Image.new('RGB',(800,200),'blue').save(image_path)
+        source={'id':'image','type':'image','file':str(image_path)}
+        shot={'kind':'image','source_id':'image','bbox':[.25,0,.75,1],'focus':[.375,.25,.625,.75]}
+        plan={'blocks':[{'id':'b','shots':[shot]}]}
+        request={'format':'custom','width':1000,'height':1600,'layout_style':'immersive','media_fit':'cover'}
+        _,scope=prepare_review_assets(self.job,plan,[source],[],request=request)
+        item=scope['compositions'][0]
+        self.assertEqual(item['fit'],'cover');self.assertFalse(item['protect_content'])
+        self.assertEqual(item['focus_crop_normalized'],[.25,.25,.75,.75])
+        self.assertEqual(item['visible_image_rect'],[0,0,1000,1600])
+        self.assertEqual(item['image_canvas_area_ratio'],1)
+        self.assertEqual(item['focus_rect'],[0,400,1000,800])
+        self.assertEqual(scope['crops'][0]['bbox'],[.25,0,.75,1])
+
+    def test_composition_budget_and_changed_canvas_or_focus_are_explicit(self):
+        request={'format':'portrait','layout_style':'immersive'}
+        _,scope=prepare_review_assets(self.job,self.plan,self.sources,[],max_images=2,request=request)
+        self.assertEqual(scope['compositions'],[])
+        self.assertEqual(len(scope['omitted_compositions']),1)
+        self.assertEqual(len(scope['originals']),1);self.assertEqual(len(scope['crops']),1)
+        _,first=prepare_review_assets(self.job,self.plan,self.sources,[],request=request)
+        _,changed=prepare_review_assets(self.job,self.plan,self.sources,[],request=request|{'format':'landscape'})
+        self.assertNotEqual(first['compositions'][0]['path'],changed['compositions'][0]['path'])
+        self.plan['blocks'][0]['shots'][0]['focus']=[.3,.3,.7,.7]
+        _,focused=prepare_review_assets(self.job,self.plan,self.sources,[],request=request)
+        self.assertNotEqual(first['compositions'][0]['path'],focused['compositions'][0]['path'])
+
+    def test_same_composition_is_deduplicated_without_losing_shot_coverage(self):
+        self.plan['blocks'].append({'id':'b2','shots':copy.deepcopy(self.plan['blocks'][0]['shots'])})
+        images,scope=prepare_review_assets(self.job,self.plan,self.sources,[],max_images=3,request={'format':'portrait'})
+        self.assertEqual(len(images),3)
+        self.assertEqual([s['block_id'] for s in scope['compositions'][0]['shots']],['b1','b2'])
 
     def test_selected_page_and_crop_replace_unused_samples_and_deduplicate(self):
         duplicate = {'id': 'b2', 'narration': 'Another use.', 'evidence': [],

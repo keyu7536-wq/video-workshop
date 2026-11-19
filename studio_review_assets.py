@@ -80,18 +80,102 @@ def _render(job, folder, source, bbox=None):
     return target, actual
 
 
-def prepare_review_assets(job, plan, sources, prior_images, max_images=65):
+def _composition(job,folder,source,bbox,focus,request):
+    """Project a registered source into the renderer's canvas, never auto-crop it.
+
+    Native-pixel metrics describe rectangles, not semantic subject size. This
+    planned image omits captions and animation; final encoded review is required.
+    """
+    from PIL import Image,ImageDraw,ImageOps
+    from studio_display import effective_display_settings
+    from studio_render import media_geometry
+    settings=effective_display_settings(request)
+    width,height=settings['width'],settings['height']
+    source_path=_inside(job,source['file'])
+    protected=source['type']=='page'
+    mapped=list(focus or [])
+    actual=None
+    if protected:
+        import pymupdf
+        from studio_crop import panel_clip
+        with pymupdf.open(source_path) as document:
+            page=document[source['page']-1];bounds=page.rect
+            box=bbox or [0,0,1,1]
+            clip=panel_clip(page,pymupdf.Rect(box[0]*bounds.width,box[1]*bounds.height,
+                                             box[2]*bounds.width,box[3]*bounds.height))
+            actual=list(clip)
+            zoom=max(2,min(6,max(width/clip.width,height/clip.height)))
+            pix=page.get_pixmap(matrix=pymupdf.Matrix(zoom,zoom),clip=clip,alpha=False)
+            picture=Image.frombytes('RGB',(pix.width,pix.height),pix.samples)
+            if mapped:
+                x0,y0,x1,y1=mapped
+                mapped=[(x0*bounds.width-clip.x0)/clip.width,(y0*bounds.height-clip.y0)/clip.height,
+                        (x1*bounds.width-clip.x0)/clip.width,(y1*bounds.height-clip.y0)/clip.height]
+    else:
+        with Image.open(source_path) as original:
+            if bbox:
+                sw,sh=original.size;x0,y0,x1,y1=bbox
+                actual=[int(x0*sw),int(y0*sh),int(x1*sw),int(y1*sh)]
+                picture=original.crop(tuple(actual)).convert('RGB')
+                if mapped:
+                    fx0,fy0,fx1,fy1=mapped
+                    mapped=[(fx0-x0)/(x1-x0),(fy0-y0)/(y1-y0),(fx1-x0)/(x1-x0),(fy1-y0)/(y1-y0)]
+            else:picture=original.convert('RGB')
+    mapped=[max(0,min(1,value)) for value in mapped]
+    x,y,mw,mh=media_geometry(width,height,settings,protected)
+    mw-=mw%2;mh-=mh%2
+    cover=settings.get('media_fit')=='cover' and not protected
+    sw,sh=picture.size
+    scale=(max if cover else min)(mw/sw,mh/sh)
+    dw,dh=sw*scale,sh*scale;dx=x+(mw-dw)/2;dy=y+(mh-dh)/2
+    visible=[max(x,dx),max(y,dy),min(x+mw,dx+dw),min(y+mh,dy+dh)]
+    visible=[visible[0],visible[1],visible[2]-visible[0],visible[3]-visible[1]]
+    focus_rect=[]
+    if mapped and mapped[2]>mapped[0] and mapped[3]>mapped[1]:
+        left=max(x,dx+mapped[0]*dw);top=max(y,dy+mapped[1]*dh)
+        right=min(x+mw,dx+mapped[2]*dw);bottom=min(y+mh,dy+mapped[3]*dh)
+        if right>left and bottom>top:focus_rect=[left,top,right-left,bottom-top]
+    target=_target(folder,source_path,source.get('page'),
+        {'composition-v1':settings,'bbox':bbox,'focus':focus,'protected':protected})
+    canvas=Image.new('RGB',(width,height),(8,14,21))
+    if cover:
+        # Resize only the visible center crop, avoiding a huge intermediate for
+        # extreme source aspect ratios. This matches the renderer's center fit.
+        fitted=ImageOps.fit(picture,(mw,mh),method=Image.Resampling.LANCZOS)
+        canvas.paste(fitted,(x,y))
+    else:
+        # FFmpeg requests even image dimensions inside the media rectangle.
+        iw=max(2,int(dw)//2*2);ih=max(2,int(dh)//2*2)
+        fitted=picture.resize((iw,ih),Image.Resampling.LANCZOS)
+        canvas.paste(fitted,(int(x+(mw-iw)/2),int(y+(mh-ih)/2)))
+    if focus_rect:
+        left,top,fw,fh=focus_rect
+        ImageDraw.Draw(canvas).rectangle((left,top,left+fw,top+fh),outline=(84,214,189),width=max(3,width//250))
+    canvas.thumbnail((1600,1600),Image.Resampling.LANCZOS)
+    canvas.save(target)
+    rounded=lambda values:[round(v,3) for v in values]
+    return target,{'canvas':[width,height],'preview_pixels':list(canvas.size),'media_box':[x,y,mw,mh],
+        'source_crop_pixels':[sw,sh],'actual_bounds':actual,'fit':'cover' if cover else 'contain',
+        'protect_content':protected,'displayed_image_rect':rounded([dx,dy,dw,dh]),
+        'visible_image_rect':rounded(visible),'image_canvas_area_ratio':round(visible[2]*visible[3]/(width*height),6),
+        'focus_crop_normalized':mapped,'focus_rect':rounded(focus_rect),
+        'focus_canvas_area_ratio':round(focus_rect[2]*focus_rect[3]/(width*height),6) if focus_rect else 0,
+        'scope':'Planned native-pixel geometry; preview may be downscaled. Image/highlight rectangles are not semantic subject size. No encoded frames, captions, duration or motion inspected.'}
+
+
+def prepare_review_assets(job, plan, sources, prior_images, max_images=65,request=None):
     """Return ``(label/Path pairs, coverage)`` without changing intake records.
 
     Selected page/image originals and selected-video contact sheets take
-    priority, then unique actual crops, then unused intake samples. Too many
-    mandatory images fail explicitly; crop/optional omissions are listed.
+    priority, then unique actual crops, then optional canvas compositions and
+    unused intake samples. Omissions are explicit within the same image budget.
     """
     if type(max_images) is not int or not 1 <= max_images <= 65:
         raise ValueError('审核附图预算须为1至65。')
     job = Path(job).resolve()
     lookup = {source['id']: source for source in sources if source.get('id')}
     selected, crop_requests, missing_ids, used_video_ids = {}, {}, [], set()
+    compositions={}
     for block in plan.get('blocks', []):
         for index, shot in enumerate(block.get('shots', [])):
             source_id = shot.get('source_id')
@@ -115,6 +199,11 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65):
                 key = (source_id, tuple(bbox))
                 item = crop_requests.setdefault(key, {'source_id': source_id, 'bbox': bbox, 'shots': []})
                 item['shots'].append({'block_id': block.get('id'), 'shot_index': index})
+            if request is not None:
+                focus=_bbox(shot.get('focus'))
+                key=(source_id,tuple(bbox or []),tuple(focus or []))
+                item=compositions.setdefault(key,{'source_id':source_id,'bbox':bbox or [],'focus':focus or [],'shots':[]})
+                item['shots'].append({'block_id':block.get('id'),'shot_index':index})
 
     def relevant_video(label):
         return any(source_id and (label == source_id or label.startswith(source_id + ' '))
@@ -136,6 +225,7 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65):
     folder.mkdir(parents=True, exist_ok=True)
     coverage = {'max_images': max_images, 'selected_source_ids': list(selected),
                 'originals': [], 'crops': [], 'omitted_crops': [], 'omitted_prior': [],
+                'compositions':[],'omitted_compositions':[],
                 'missing_source_ids': missing_ids,
                 'scope': 'Current selected PDF pages/images and available selected-video contact sheets; no full-document visual reading or audio inspection.'}
     result = []
@@ -158,6 +248,14 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65):
         label = item['source_id'] + ' · 实际裁图 bbox=' + json.dumps(item['bbox'], separators=(',', ':'))
         result.append((label, path))
         coverage['crops'].append(item | {'label': label, 'path': str(path), 'actual_bounds': actual})
+    for item in compositions.values():
+        if len(result)>=max_images:
+            coverage['omitted_compositions'].append(item|{'reason':'Image budget; composition not inspected.'})
+            continue
+        path,metrics=_composition(job,folder,selected[item['source_id']],item['bbox'],item['focus'],request)
+        label=item['source_id']+' · 构图预览（非成片） '+str(metrics['canvas'][0])+'×'+str(metrics['canvas'][1])
+        result.append((label,path))
+        coverage['compositions'].append(item|metrics|{'label':label,'path':str(path)})
     attached_paths = {path for _, path in result} | selected_paths
     for label, file in prior_images:
         path = _inside(job, file)
