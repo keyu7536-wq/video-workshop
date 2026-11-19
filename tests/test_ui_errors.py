@@ -1,5 +1,6 @@
 """Headless checks for persistent job errors using isolated jobs and HTTP ports."""
 import contextlib
+import copy
 import importlib.util
 import tempfile
 import threading
@@ -42,6 +43,8 @@ class JobErrorUITests(unittest.TestCase):
         cls.initial_jobs={}
         for name,document,error,review in cases:
             job=cls.root/'jobs'/name;(job/'analysis').mkdir(parents=True)
+            if document:server.engine.validate(document,[])
+            if review and document:review.update(_plan_hash=server.engine.plan_hash(document),_content_type='auto',_story_framework='auto')
             state={'engine':'studio','status':'failed' if error else 'prepared','error':error,
                    'failed_action':'export' if name=='export_failed' else None}
             if name=='review_unavailable':state['status']='review_needed'
@@ -64,6 +67,35 @@ class JobErrorUITests(unittest.TestCase):
                     'project_sha256':file_hash(job/'project.json')})
                 pv.save_json(job/'output/render_receipt.json',{key:value for key,value in pv.load_json(job/'output/final_review.json').items()
                     if key in ('plan_hash','settings_hash','video_sha256','project_sha256')})
+        for name,ready in [('plan_blocked',False),('plan_contradictory',True),('plan_multi_shot',False),('plan_display_blocked',False),('plan_review_service_failed',False)]:
+            job=cls.root/'jobs'/name;(job/'analysis').mkdir(parents=True)
+            document=copy.deepcopy(plan)
+            document['source_issues']=['作者没有提供演示视频，采用论文图。']
+            document['blocks'].append({'id':'failure','chapter':'靠近后的碰撞','narration':'论文报告这一回合发生碰撞。',
+                'evidence':[],'shots':[{'kind':'image','source_id':'figure','in':0,'duration':4,
+                    'bbox':[0,0,1,1],'focus':[.1,.1,.8,.45],'keep_full':False,'label':'轨迹对比',
+                    'card_text':'','cue':''}]})
+            if name=='plan_multi_shot':
+                second=copy.deepcopy(document['blocks'][1]['shots'][0]);second['cue']='发生碰撞'
+                document['blocks'][1]['shots'].append(second)
+            state={'engine':'studio','status':'review_needed','stage':'plan_review','error':None}
+            if name=='plan_review_service_failed':state.update(status='failed',failed_action='render',error='model unavailable: HTTP 503')
+            request={'format':'landscape','backend':'codex','auto_repair':False,'final_review':True}
+            if name=='plan_display_blocked':request.update(format='portrait',width=1920,height=1080)
+            review={'ready':ready,'summary':'第二段需要修改裁图。','issues':[
+                {'severity':'error','block_id':'failure','reason':'裁图混入另一回合，请单独裁出碰撞案例。'},
+                {'severity':'warning','block_id':'b1','reason':'成片时确认图表文字可读。'}]}
+            if name=='plan_display_blocked':review['issues'][0]['reason']='竖屏中图表过小，无法辨认旁白所述的差异。'
+            from PIL import Image
+            figure=job/'figure.png';Image.new('RGB',(600,400),'white').save(figure)
+            sources=[{'id':'figure','type':'image','name':'实验轨迹图','file':str(figure)}]
+            server.engine.validate(document,sources);review.update(_plan_hash=server.engine.plan_hash(document),_content_type='auto',_story_framework='auto')
+            from studio_display import effective_display_settings
+            review['_effective_display_settings']=effective_display_settings(request)
+            pv.save_json(job/'analysis/sources.json',sources)
+            pv.save_json(job/'job.json',state);pv.save_json(job/'request.json',request)
+            pv.save_json(job/'analysis/studio_plan.json',document);pv.save_json(job/'review.json',review)
+            cls.initial_jobs[name]=(state,request,document)
         cls.playwright=sync_playwright().start();cls.resources.callback(cls.playwright.stop)
         executable=Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
         try:
@@ -106,6 +138,190 @@ class JobErrorUITests(unittest.TestCase):
         text=self.page.locator('#reviewBanner').inner_text()
         self.assertIn('关键结果缺少原文依据。',text)
         self.assertNotIn('资料与文稿已完成自动复核',text)
+
+    def test_plan_review_opens_editor_and_separates_blockers_from_notes(self):
+        self.open_job('plan_blocked')
+        self.assertIn('分镜待修改',self.page.locator('[data-job="plan_blocked"] small').inner_text())
+        banner=self.page.locator('#reviewBanner')
+        self.assertIn('1 项需要修改',banner.inner_text())
+        self.assertIn('1 条非阻断提示',banner.inner_text())
+        self.assertIn('1 条来源说明',banner.inner_text())
+        self.assertIn('第 2 段 · 靠近后的碰撞',banner.inner_text())
+        self.assertFalse(self.page.locator('#retryJob').is_visible())
+        self.assertFalse(self.page.locator('#autoRepair').is_checked())
+        self.assertTrue(self.page.locator('#repairPlanButton').is_visible())
+        self.assertTrue(self.page.locator('#renderButton').is_disabled())
+        self.assertFalse(self.page.locator('#exportButton').is_enabled())
+        self.assertEqual(self.errors,[])
+
+    def test_blocker_opens_its_exact_single_shot_without_changing_plan(self):
+        self.open_job('plan_blocked')
+        before=self.page.evaluate('JSON.stringify(state.job.plan)')
+        self.page.locator('[data-review-shot="1,0"]').click()
+        self.assertTrue(self.page.locator('#shotDialog').is_visible())
+        self.assertEqual(self.page.locator('#shotSource').input_value(),'figure')
+        self.assertTrue(self.page.locator('#shotFocus').is_checked())
+        self.assertIn('取消勾选',self.page.locator('#cropHint').inner_text())
+        self.assertEqual(self.page.evaluate('JSON.stringify(state.job.plan)'),before)
+
+    def test_error_overrides_inconsistent_ready_true_flag(self):
+        self.open_job('plan_contradictory')
+        self.assertTrue(self.page.locator('#reviewBanner .plan-review-blocked').is_visible())
+        self.assertIn('1 项需要修改',self.page.locator('#reviewBanner').inner_text())
+        self.assertTrue(self.page.locator('#repairPlanButton').is_visible())
+        self.assertTrue(self.page.locator('#renderButton').is_disabled())
+
+    def test_multi_shot_issue_locates_block_without_guessing_which_shot(self):
+        self.open_job('plan_multi_shot')
+        self.assertEqual(self.page.locator('[data-review-shot="1,0"]').count(),0)
+        self.page.locator('[data-review-block="1"]').click()
+        self.assertEqual(self.page.evaluate('document.activeElement.dataset.narration'),'1')
+        self.assertFalse(self.page.locator('#shotDialog').is_visible())
+        self.assertEqual(self.page.locator('[data-block-index="1"] [data-shot]').count(),2)
+
+    def test_explicit_auto_repair_uses_existing_render_api_and_quality_review(self):
+        self.open_job('plan_blocked')
+        self.assertIn('最多自动修正一次',self.page.locator('#reviewBanner').inner_text())
+        before=pv.load_json(self.root/'jobs/plan_blocked/analysis/studio_plan.json')
+        with patch.object(self.http.manager,'start') as start:
+            with self.page.expect_response(lambda response:response.url.endswith('/api/render') and response.request.method=='POST') as response:
+                self.page.locator('#repairPlanButton').click()
+            self.assertEqual(response.value.status,200)
+            start.assert_called_once_with(self.root/'jobs/plan_blocked','render','')
+        request=pv.load_json(self.root/'jobs/plan_blocked/request.json')
+        self.assertIs(request['auto_repair'],True)
+        self.assertIs(request['final_review'],True)
+        self.assertEqual(pv.load_json(self.root/'jobs/plan_blocked/analysis/studio_plan.json'),before)
+        self.assertEqual(self.errors,[])
+
+    def test_manual_shot_edit_saves_crop_and_enables_review_without_auto_repair(self):
+        self.open_job('plan_blocked')
+        self.page.locator('[data-review-shot="1,0"]').click()
+        self.page.locator('#shotFocus').uncheck()
+        self.page.wait_for_function('document.querySelector("#cropImage").naturalWidth > 0')
+        box=self.page.locator('#cropImage').bounding_box()
+        self.page.mouse.move(box['x']+box['width']*.1,box['y']+box['height']*.1)
+        self.page.mouse.down();self.page.mouse.move(box['x']+box['width']*.85,box['y']+box['height']*.48);self.page.mouse.up()
+        self.page.locator('#shotForm button[type="submit"]').click()
+        self.assertIn('修改尚未复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertFalse(self.page.locator('#repairPlanButton').is_visible())
+        self.assertFalse(self.page.locator('#renderButton').is_disabled())
+        self.page.locator('#savePlan').click()
+        self.page.wait_for_function('!state.dirty')
+        self.assertIn('修改尚未复核',self.page.locator('#reviewBanner').inner_text())
+        self.page.reload(wait_until='networkidle');self.open_job('plan_blocked')
+        self.assertIn('修改尚未复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertFalse(self.page.locator('#repairPlanButton').is_visible())
+        self.assertFalse(self.page.locator('#renderButton').is_disabled())
+        with patch.object(self.http.manager,'start') as start:
+            with self.page.expect_response(lambda response:response.url.endswith('/api/render') and response.request.method=='POST') as response:
+                self.page.locator('#renderButton').click()
+            self.assertEqual(response.value.status,200)
+            start.assert_called_once_with(self.root/'jobs/plan_blocked','render','')
+        shot=pv.load_json(self.root/'jobs/plan_blocked/analysis/studio_plan.json')['blocks'][1]['shots'][0]
+        self.assertEqual(shot['focus'],[])
+        self.assertAlmostEqual(shot['bbox'][1],.1,places=2)
+        self.assertAlmostEqual(shot['bbox'][3],.48,places=2)
+        self.assertFalse(pv.load_json(self.root/'jobs/plan_blocked/request.json')['auto_repair'])
+        self.assertEqual(self.errors,[])
+
+    def test_saving_unchanged_blocked_plan_does_not_enable_blind_render_retry(self):
+        self.open_job('plan_blocked')
+        with self.page.expect_response(lambda response:response.url.endswith('/api/plan')):
+            self.page.locator('#savePlan').click()
+        self.assertTrue(self.page.locator('#renderButton').is_disabled())
+        self.assertFalse(self.page.locator('#retryJob').is_visible())
+        self.assertTrue(self.page.locator('#repairPlanButton').is_visible())
+        self.assertFalse(pv.load_json(self.root/'jobs/plan_blocked/request.json')['auto_repair'])
+
+    def test_changed_requirements_reopen_as_pending_review_without_modifying_narration(self):
+        self.open_job('plan_blocked')
+        original=self.page.locator('[data-narration="1"]').input_value()
+        self.page.locator('#editorBriefWrap summary').click()
+        self.page.locator('#editorBrief').fill('这一段说明论文报告的失败案例，避免把轨迹当接触视频。')
+        self.assertIn('修改尚未复核',self.page.locator('#reviewBanner').inner_text())
+        with self.page.expect_response(lambda response:response.url.endswith('/api/plan')):
+            self.page.locator('#savePlan').click()
+        self.page.reload(wait_until='networkidle');self.open_job('plan_blocked')
+        self.assertIn('修改尚未复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertFalse(self.page.locator('#repairPlanButton').is_visible())
+        self.assertFalse(self.page.locator('#renderButton').is_disabled())
+        self.assertEqual(self.page.locator('[data-narration="1"]').input_value(),original)
+
+    def test_new_display_can_be_reviewed_but_plan_save_does_not_save_display(self):
+        self.open_job('plan_display_blocked')
+        job=self.root/'jobs/plan_display_blocked'
+        before=pv.load_json(job/'analysis/studio_plan.json')
+        self.page.locator('#editDisplay').click();self.page.locator('#format').select_option('landscape')
+        self.assertFalse(self.page.locator('#regenerateDisplay').is_disabled())
+        self.page.locator('[data-tab="editor"]').click()
+        self.assertIn('画面设置待复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertFalse(self.page.locator('#repairPlanButton').is_visible())
+        self.assertFalse(self.page.locator('#renderButton').is_disabled())
+        self.assertFalse(self.page.evaluate('state.dirty'))
+        with self.page.expect_response(lambda response:response.url.endswith('/api/plan')):
+            self.page.locator('#savePlan').click()
+        self.assertEqual(pv.load_json(job/'request.json')['format'],'portrait')
+        self.assertEqual(self.page.evaluate('state.job.request.format'),'portrait')
+        self.assertIn('画面设置待复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertIn('生成时才提交',self.page.locator('#reviewBanner').inner_text())
+        self.page.locator('#editDisplay').click()
+        with patch.object(self.http.manager,'start') as start:
+            with self.page.expect_response(lambda response:response.url.endswith('/api/render') and response.request.method=='POST') as response:
+                self.page.locator('#regenerateDisplay').click()
+            self.assertEqual(response.value.status,200)
+            body=response.value.request.post_data_json
+            self.assertEqual(body['display']['format'],'landscape')
+            self.assertIs(body['auto_repair'],False)
+            start.assert_called_once_with(job,'render','')
+        self.assertEqual(pv.load_json(job/'request.json')['format'],'landscape')
+        self.assertIs(pv.load_json(job/'request.json')['auto_repair'],False)
+        self.assertEqual(pv.load_json(job/'analysis/studio_plan.json'),before)
+        self.assertEqual(self.errors,[])
+
+    def test_restored_preset_ignores_dormant_custom_dimensions_and_restores_blocker(self):
+        self.open_job('plan_display_blocked')
+        self.page.locator('#editDisplay').click()
+        self.page.locator('#format').select_option('landscape')
+        self.assertFalse(self.page.locator('#regenerateDisplay').is_disabled())
+        self.page.locator('#format').select_option('portrait')
+        self.assertTrue(self.page.locator('#regenerateDisplay').is_disabled())
+        self.page.locator('#format').select_option('custom')
+        self.page.locator('#customWidth').fill('2048');self.page.locator('#customHeight').fill('1024')
+        self.page.locator('#format').select_option('portrait')
+        self.assertTrue(self.page.locator('#regenerateDisplay').is_disabled())
+        self.page.locator('[data-tab="editor"]').click()
+        self.assertTrue(self.page.locator('#renderButton').is_disabled())
+        self.assertTrue(self.page.locator('#repairPlanButton').is_visible())
+        self.assertNotIn('画面设置待复核',self.page.locator('#reviewBanner').inner_text())
+        self.assertFalse(self.page.evaluate('state.dirty'))
+        self.assertEqual(self.page.evaluate('state.job.request.width'),1920)
+        self.assertEqual(self.errors,[])
+
+    def test_review_service_failure_is_not_hidden_by_older_blocked_review(self):
+        self.open_job('plan_review_service_failed')
+        status={'active':True,'job_id':'plan_review_service_failed','logs':['【文稿与分镜】重新复核']}
+        self.page.route('**/api/status',lambda route:route.fulfill(json=status));self.page.evaluate('poll()')
+        status['active']=False;self.page.evaluate('poll()')
+        self.assertIn('model unavailable: HTTP 503',self.page.locator('#toast').inner_text())
+        banner=self.page.locator('#reviewBanner')
+        self.assertIn('model unavailable: HTTP 503',banner.inner_text())
+        self.assertIn('上次复核',banner.inner_text())
+        self.assertFalse(self.page.locator('#repairPlanButton').is_visible())
+        self.assertTrue(self.page.locator('#retryJob').is_visible())
+        self.assertFalse(self.page.locator('#retryJob').is_disabled())
+        self.assertFalse(self.page.locator('#renderButton').is_disabled())
+        job=self.root/'jobs/plan_review_service_failed'
+        original_review=(job/'review.json').read_bytes()
+        with patch.object(self.http.manager,'start') as start:
+            with self.page.expect_response(lambda response:response.url.endswith('/api/render') and response.request.method=='POST') as response:
+                self.page.locator('#retryJob').click()
+            self.assertEqual(response.value.status,200)
+            start.assert_called_once_with(job,'render','')
+        self.assertEqual((job/'review.json').read_bytes(),original_review)
+        self.assertIs(pv.load_json(job/'request.json')['auto_repair'],False)
+        self.assertIs(pv.load_json(job/'request.json')['final_review'],True)
+        self.assertEqual(self.errors,[])
 
     def test_switching_jobs_clears_stale_error_and_stale_storyboard(self):
         self.open_job('render_failed');self.open_job('prepared')
@@ -253,6 +469,22 @@ class JobErrorUITests(unittest.TestCase):
         self.assertEqual(self.page.locator('#projectName').inner_text(),'当前任务已完成')
         self.assertTrue(self.page.locator('#view-output').is_visible())
         self.assertIn('视频已生成',self.page.locator('#toast').inner_text())
+        self.assertEqual(self.errors,[])
+
+    def test_worker_plan_checkpoint_returns_to_editor_with_actionable_message(self):
+        self.open_job('render_failed')
+        status={'active':True,'job_id':'render_failed','logs':['【文稿与分镜】复核']}
+        self.page.route('**/api/status',lambda route:route.fulfill(json=status));self.page.evaluate('poll()')
+        job=self.root/'jobs/render_failed';plan=pv.load_json(job/'analysis/studio_plan.json')
+        pv.save_json(job/'job.json',{'engine':'studio','status':'review_needed','stage':'plan_review','error':None})
+        pv.save_json(job/'review.json',{'ready':False,'summary':'请修改镜头','_plan_hash':server.engine.plan_hash(plan),
+            '_content_type':'auto','_story_framework':'auto','issues':[{'severity':'error','block_id':'b1','reason':'所选画面对应其他案例。'}]})
+        status['active']=False;self.page.evaluate('poll()')
+        self.assertTrue(self.page.locator('#view-editor').is_visible())
+        self.assertIn('分镜待修改',self.page.locator('#toast').inner_text())
+        self.assertNotIn('任务已停止',self.page.locator('#toast').inner_text())
+        self.assertTrue(self.page.locator('#repairPlanButton').is_visible())
+        self.assertTrue(self.page.locator('#renderButton').is_disabled())
         self.assertEqual(self.errors,[])
 
 

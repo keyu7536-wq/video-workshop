@@ -74,9 +74,8 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     from studio_process import redact
     from studio_story import story_instruction
     from studio_context import context_sources
-    from studio_display import DISPLAY_KEYS
-    visual_settings={key:request[key] for key in DISPLAY_KEYS if key in request}
-    visual_settings.setdefault('minimal_text',False)
+    from studio_display import effective_display_settings
+    visual_settings=effective_display_settings(request)
     research=request.get('_research') or (pv.load_json(job/'research.json') if (job/'research.json').is_file() else {})
     model_sources=context_sources(sources,research,evidence=[e for b in plan['blocks'] for e in b['evidence']],current_script=request.get('script'))
     from studio_engine import plan_hash

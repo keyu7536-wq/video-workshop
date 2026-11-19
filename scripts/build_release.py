@@ -51,6 +51,7 @@ REQUIRED = (
     'tests/test_project_refresh.py',
     'tests/test_visual_policy_review.py', 'tests/test_repository_fallback.py', 'tests/test_review_feedback.py', 'tests/test_review_assets.py', 'tests/test_plan_review_context.py',
     'tests/test_author_media.py', 'tests/test_audio_playback_ui.py', 'tests/test_backend_isolation.py', 'tests/test_console_output.py',
+    'tests/test_plan_gate.py', 'tests/test_effective_canvas.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',
@@ -149,7 +150,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=ROOT)
     parser.add_argument('--output',type=Path,default=ROOT/'dist')
-    parser.add_argument('--version',default='0.3.0')
+    parser.add_argument('--version',default='0.3.1')
     parser.add_argument('--check',action='store_true')
     args=parser.parse_args();root=args.root.resolve()
     if args.check:

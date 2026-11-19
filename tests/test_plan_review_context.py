@@ -41,8 +41,10 @@ class PlanReviewContextTests(unittest.TestCase):
             with patch.object(engine, 'call_ai') as ai, patch.object(engine, 'export'), \
                  patch('studio_recovery.render_with_recovery') as render, patch('paper_video.log'):
                 for _ in range(2):
-                    with self.assertRaisesRegex(ValueError, '未通过内容复核'):
-                        engine.execute(job, 'render')
+                    engine.execute(job, 'render')
+                    state=pv.load_json(job/'job.json')
+                    self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
+                    self.assertIsNone(state['error'])
             ai.assert_not_called()
             render.assert_not_called()
             self.assertEqual(pv.load_json(job / 'review.json'), review)
@@ -56,8 +58,10 @@ class PlanReviewContextTests(unittest.TestCase):
                  patch.object(engine, 'export'), patch('studio_recovery.render_with_recovery') as render, \
                  patch('paper_video.log'):
                 for _ in range(2):
-                    with self.assertRaisesRegex(ValueError, '未通过内容复核'):
-                        engine.execute(job, 'render')
+                    engine.execute(job, 'render')
+                    state=pv.load_json(job/'job.json')
+                    self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
+                    self.assertIsNone(state['error'])
             ai.assert_called_once()
             render.assert_not_called()
             current = pv.load_json(job / 'review.json')

@@ -27,7 +27,6 @@ class ShotPreviewTests(unittest.TestCase):
         cls.resources.enter_context(patch.object(server,'ROOT',cls.root))
         cls.resources.enter_context(patch.object(engine,'ROOT',cls.root))
         cls.resources.enter_context(patch.object(server,'INBOX',cls.root/'uploads'))
-        cls.resources.enter_context(patch.object(server,'PROTOCOL_VERSION',11))
         cls.fixture=cls.root/'source.mp4'
         subprocess.run([ffmpeg_path(),'-v','error','-y','-f','lavfi','-i',
             'testsrc2=size=320x180:rate=30','-t','5','-c:v','libx264','-pix_fmt','yuv420p',

@@ -10,6 +10,7 @@ import studio_engine as engine
 import studio_plan_repair as repair
 from studio_revision import file_hash,render_settings_hash
 from studio_story import STORY_POLICY_VERSION
+from studio_display import effective_display_settings
 from tests.test_plan_repair import plan,SOURCES
 
 
@@ -25,7 +26,8 @@ class ReviewFeedbackTests(unittest.TestCase):
         self.previous={'ready':True,'summary':'Original plan review','issues':[],
                        '_plan_hash':engine.plan_hash(self.plan),'_content_type':'general',
                        '_story_framework':'auto','_story_policy_version':STORY_POLICY_VERSION,
-                       '_plan_review_context_version':engine.PLAN_REVIEW_CONTEXT_VERSION}
+                       '_plan_review_context_version':engine.PLAN_REVIEW_CONTEXT_VERSION,
+                       '_effective_display_settings':effective_display_settings(self.request)}
         for name,value in [('request.json',self.request),('review.json',self.previous),
                            ('analysis/studio_plan.json',self.plan),('analysis/sources.json',SOURCES),
                            ('job.json',{'status':'review_needed'}),('project.json',{'blocks':[]})]:
@@ -64,7 +66,10 @@ class ReviewFeedbackTests(unittest.TestCase):
         with patch.object(repair,'repair_plan_once',side_effect=reject_without_encoding), \
              patch.object(engine,'export'),patch('studio_recovery.render_with_recovery') as render, \
              patch('studio_delivery.export_formats'),patch('paper_video.log'):
-            with self.assertRaisesRegex(ValueError,'未通过内容复核'):engine.execute(self.job,'render')
+            engine.execute(self.job,'render')
+        state=pv.load_json(self.job/'job.json')
+        self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
+        self.assertIsNone(state['error'])
         render.assert_not_called()
         self.assertEqual(len(received),1);self.assertIn(self.issue,received[0]['issues'])
         self.assertFalse(received[0]['ready'])
@@ -90,7 +95,10 @@ class ReviewFeedbackTests(unittest.TestCase):
              patch.object(engine,'export'),patch('studio_recovery.render_with_recovery') as render, \
              patch('paper_video.log'):
             for _ in range(2):
-                with self.assertRaisesRegex(ValueError,'未通过内容复核'):engine.execute(self.job,'render')
+                engine.execute(self.job,'render')
+                state=pv.load_json(self.job/'job.json')
+                self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
+                self.assertIsNone(state['error'])
         generate.assert_called_once();review.assert_called_once();render.assert_not_called()
         self.assertFalse(pv.load_json(self.job/'review.json')['ready'])
         self.assertEqual(pv.load_json(self.job/'analysis/studio_plan.json'),self.plan)

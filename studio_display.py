@@ -10,6 +10,18 @@ def dimensions(data):
     validate_dimensions(width,height)
     return width,height
 
+def effective_display_settings(data):
+    """Describe the renderer's active canvas without overwriting saved inputs.
+
+    Width/height fields remain editable custom-size memory when a preset is
+    selected. Only the settings copy sent to planning/review uses preset pixels.
+    """
+    settings={key:data[key] for key in DISPLAY_KEYS if key in data}
+    settings.setdefault('format','portrait')
+    settings['width'],settings['height']=dimensions(data)
+    settings.setdefault('minimal_text',False)
+    return settings
+
 def validate_dimensions(width,height):
     if any(type(n) is not int or not 320<=n<=3840 or n%2 for n in (width,height)):
         raise ValueError('宽高须为 320～3840 之间的偶数像素')

@@ -215,9 +215,32 @@ class Manager:
             return {'active':active,'job_id':self.job.name if self.job else None,'logs':list(self.lines)}
 
 
+def legacy_plan_checkpoint(state,plan,review,request,sources):
+    """Recognize the old gate exception without changing its historical record."""
+    if (state.get('status')!='failed' or state.get('stage')!='render'
+            or state.get('failed_action')!='render' or not isinstance(state.get('error'),str)
+            or not state['error'].startswith('文稿与分镜未通过内容复核：')):return False
+    if not isinstance(plan,dict) or not isinstance(review,dict) or sources is None:return False
+    try:
+        import copy
+        from studio_story import normalize_framework,STORY_POLICY_VERSION
+        if (review.get('_plan_hash')!=engine.plan_hash(plan)
+                or review.get('_content_type')!=request.get('content_type','auto')
+                or review.get('_story_framework')!=normalize_framework(request.get('story_framework'))
+                or review.get('_story_policy_version')!=STORY_POLICY_VERSION
+                or review.get('_brief_revision')!=request.get('_brief_revision')):return False
+        reasons=[i['reason'] for i in review['issues'] if i['severity']=='error']
+        if review.get('ready') is not False and not reasons:return False
+        expected='文稿与分镜未通过内容复核：'+('；'.join(reasons[:2])[:800] or review.get('summary','请查看具体复核结果。'))
+        if state['error']!=expected:return False
+        engine.validate(copy.deepcopy(plan),sources,request.get('script','').strip())
+        return True
+    except (ValueError,TypeError,KeyError,AttributeError):return False
+
+
 def snapshot(job):
     state=recover_interrupted_job(job); plan_path=job/'analysis/studio_plan.json'
-    result={'id':job.name,'status':state['status'],'error':state.get('error'),'engine':state.get('engine','legacy')}
+    result={'id':job.name,'status':state['status'],'stage':state.get('stage'),'error':state.get('error'),'engine':state.get('engine','legacy')}
     if (job/'project.json').is_file():
         project=pv.load_json(job/'project.json');result['preview_shots']=[]
         for block in project.get('blocks',[]):
@@ -229,8 +252,24 @@ def snapshot(job):
     elif (job/'analysis/plan.json').is_file(): result['legacy_plan']=pv.load_json(job/'analysis/plan.json')
     for filename,key in [('request.json','request'),('review.json','review'),('output/run_report.json','report'),('publishing.json','publishing'),('research.json','research'),('output/final_review.json','final_review'),('output/exports.json','exports'),('analysis/research/manifest.json','research_manifest')]:
         if (job/filename).is_file(): result[key]=pv.load_json(job/filename)
+    sources=None
     if (job/'analysis/sources.json').is_file():
-        result['sources']=[{k:v for k,v in source.items() if k not in ('text','file','preview')} for source in pv.load_json(job/'analysis/sources.json')]
+        sources=pv.load_json(job/'analysis/sources.json')
+        result['sources']=[{k:v for k,v in source.items() if k not in ('text','file','preview')} for source in sources]
+    if legacy_plan_checkpoint(state,result.get('plan'),result.get('review'),result.get('request',{}),sources):
+        state={**state,'status':'review_needed','stage':'plan_review','error':None}
+        result.update(status='review_needed',stage='plan_review',error=None,recorded_status='failed')
+    plan_gate=state['status']=='review_needed' and state.get('stage')=='plan_review'
+    if result.get('review') and result.get('plan'):
+        from studio_story import normalize_framework
+        from studio_display import effective_display_settings
+        review=result['review'];request=result.get('request',{})
+        review['stale']=(review.get('_plan_hash')!=engine.plan_hash(result['plan'])
+            or review.get('_content_type','auto')!=request.get('content_type','auto')
+            or review.get('_story_framework')!=normalize_framework(request.get('story_framework'))
+            or review.get('_brief_revision')!=request.get('_brief_revision')
+            or ('_effective_display_settings' in review
+                and review['_effective_display_settings']!=effective_display_settings(request)))
     if result.get('final_review') and result.get('plan'):
         from studio_revision import review_stale
         result['final_review']['stale']=review_stale(job,result['final_review'],engine.plan_hash(result['plan']))
@@ -249,7 +288,7 @@ def snapshot(job):
         except (ValueError,OSError,KeyError):pass
     can_retry_review=(unavailable_review and video.is_file() and (job/'output/run_report.json').is_file()
         and receipt_valid)
-    if state.get('engine')=='studio' and state['status'] in ('failed','cancelled','review_needed'):
+    if not plan_gate and state.get('engine')=='studio' and state['status'] in ('failed','cancelled','review_needed'):
         if can_retry_export:recovery={'action':'export','label':'重试导出'}
         elif can_retry_review:recovery={'action':'review','label':'重试成片复查'}
         elif unavailable_review and plan_path.is_file():recovery={'action':'render','label':'重新生成并复查'}
@@ -258,7 +297,7 @@ def snapshot(job):
             recovery={'action':'resume','label':'继续生成文稿与分镜'}
         else:recovery={'action':'render','label':'重试生成视频'}
     result['recovery']=recovery
-    result['can_export']=current_export and (state['status'] in ('completed','review_needed') or can_retry_export)
+    result['can_export']=not plan_gate and current_export and (state['status'] in ('completed','review_needed') or can_retry_export)
     # Use measured, rendered shot windows; the plan may differ after timing repair.
     result['rendered_segments']=[]
     timeline=job/'output/rendered_shots.json'
@@ -315,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
                 for job in sorted((ROOT/'jobs').glob('*'),reverse=True):
                     if (job/'job.json').is_file():
                         try:
-                            item=snapshot(job); items.append({'id':item['id'],'status':item['status'],'title':item.get('plan',item.get('legacy_plan',{})).get('title',job.name),'engine':item['engine']})
+                            item=snapshot(job); items.append({'id':item['id'],'status':item['status'],'stage':item['stage'],'title':item.get('plan',item.get('legacy_plan',{})).get('title',job.name),'engine':item['engine']})
                         except (ValueError,OSError,KeyError): pass
                 return self.json({'jobs':items[:40]})
             if path=='/api/job': return self.json(snapshot(job_path(query.get('id',[''])[0])))
@@ -404,7 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 request=editorial_settings(request,data,previous)
                 pv.save_json(job/'analysis/studio_plan.json',data['plan'])
                 pv.save_json(job/'request.json',request)
-                state=pv.load_json(job/'job.json'); state.update(status='prepared',error=None); pv.save_json(job/'job.json',state)
+                state=pv.load_json(job/'job.json'); state.update(status='prepared',stage=None,error=None)
+                state.pop('failed_action',None);pv.save_json(job/'job.json',state)
                 return self.json({'saved':True,'script':request.get('script',''),'brief_revision':request.get('_brief_revision')})
             if path=='/api/resume':
                 job=job_path(data['job_id']);self.ensure_idle(job,require_plan=False)

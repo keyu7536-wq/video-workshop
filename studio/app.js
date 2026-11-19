@@ -2,6 +2,9 @@
 const $ = id => document.getElementById(id);
 const escapeHTML = text => String(text ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const state = {uploads:[], reuseFiles:[], mode:'auto', job:null, active:false, dirty:false, shot:null, crop:null, polling:false};
+function reviewNeedsChanges(review){return Boolean(review&&(review.ready===false||(review.issues||[]).some(issue=>issue.severity==='error')));}
+function currentPlanBlocked(job=state.job){return Boolean(job?.plan&&job.status!=='failed'&&reviewNeedsChanges(job.review)&&!job.review.stale&&!(job===state.job&&(state.dirty||displaySettingsChanged())));}
+function jobStatusLabel(job){return job.status==='review_needed'&&job.stage==='plan_review'?'分镜待修改':({completed:'已生成',review_needed:'待复核草稿',prepared:'分镜已准备',failed:'需要处理',processing:'制作中',created:'新任务',cancelled:'已停止'})[job.status]||job.status;}
 let config = {backend:'codex', api_base:'https://api.openai.com/v1', model:'gpt-4.1', rate:'+0%', key:''};
 try { const saved=JSON.parse(localStorage.getItem('video-workshop-settings') || '{}'); for (const key of ['backend','api_base','model',...(saved.workflow_version===1?['rate']:[])]) if(saved[key]) config[key]=saved[key]; } catch (_) {}
 
@@ -24,7 +27,7 @@ function updateStoryHint(){
   const scope=state.job?.plan?'讲述结构用于新写稿；当前任务已有文稿，保存、重新配镜头和重新生成均保留原文。需要按新结构重写时，请新建任务并选择根据资料写稿。':state.mode==='script'?'口播按原文保留，框架仅供镜头组织参考，不会改写或重排已有文案。':$('article').value.trim()?'文章作为参考资料生成新文稿；需要逐字保留时，请选择“使用我的文案”。':'根据资料生成文稿，不编造资料没有支持的环节。';
   $('storyFrameworkHint').textContent=order+' '+scope;
 }
-$('storyFramework').onchange=()=>{if(state.job?.plan)state.dirty=true;updateStoryHint();};
+for(const id of ['contentType','storyFramework'])$(id).onchange=()=>{if(state.job?.plan){state.dirty=true;renderPlanReview();updateControls();}updateStoryHint();};
 $('article').addEventListener('input',updateStoryHint);
 
 function settingsToForm() { $('backend').value=config.backend;$('apiBase').value=config.api_base;$('model').value=config.model;$('apiKey').value=config.key;$('rate').value=config.rate;$('apiFields').hidden=config.backend!=='api'; }
@@ -56,11 +59,11 @@ $('dropzone').onclick=()=>$('fileInput').click();$('dropzone').onkeydown=event=>
 $('fileInput').onchange=event=>{addFiles(event.target.files);event.target.value='';};
 $('dropzone').ondragover=event=>{event.preventDefault();$('dropzone').classList.add('drag');};$('dropzone').ondragleave=()=>$('dropzone').classList.remove('drag');$('dropzone').ondrop=event=>{event.preventDefault();$('dropzone').classList.remove('drag');addFiles(event.dataTransfer.files);};
 
-async function refreshJobs() { try { const result=await api('/api/jobs');$('jobList').innerHTML=result.jobs.length?result.jobs.map(job=>`<button class="job-button ${state.job?.id===job.id?'selected':''}" data-job="${escapeHTML(job.id)}">${escapeHTML(job.title)}<small>${({completed:'已生成',review_needed:'待复核草稿',prepared:'分镜已准备',failed:'需要处理',processing:'制作中',created:'新任务',cancelled:'已停止'})[job.status] || job.status}</small></button>`).join(''):'<p class="small muted">你的创作会显示在这里。</p>';$('jobList').querySelectorAll('[data-job]').forEach(button=>button.onclick=()=>loadJob(button.dataset.job)); } catch(error){toast(error.message);} }
+async function refreshJobs() { try { const result=await api('/api/jobs');$('jobList').innerHTML=result.jobs.length?result.jobs.map(job=>`<button class="job-button ${state.job?.id===job.id?'selected':''}" data-job="${escapeHTML(job.id)}">${escapeHTML(job.title)}<small>${jobStatusLabel(job)}</small></button>`).join(''):'<p class="small muted">你的创作会显示在这里。</p>';$('jobList').querySelectorAll('[data-job]').forEach(button=>button.onclick=()=>loadJob(button.dataset.job)); } catch(error){toast(error.message);} }
 $('refreshJobs').onclick=refreshJobs;
 $('newProject').onclick=()=>{if(state.active)return toast('请等待当前制作完成，或先停止任务。');state.job=null;state.dirty=false;restoreInputs();$('contentType').value='auto';$('storyFramework').value='auto';updateStoryHint();$('voice').value=appDefaults.default_voice;const saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}');config.rate=saved.rate||appDefaults.default_rate;settingsToForm();displayToForm({layout_style:'immersive',show_sources:false,show_disclosure:false,minimal_text:true});renderUploads();$('projectName').textContent='新的视频';$('taskStatus').hidden=true;$('researchPanel').innerHTML='';$('reviewBanner').innerHTML='';$('storyboard').innerHTML='';$('finalReviewPanel').innerHTML='';$('downloadLinks').innerHTML='';$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').hidden=true;$('videoEmpty').hidden=false;setPlaybackAudioJob(null);renderMeasuredSegments(false);updateControls();tab('create');refreshJobs();};
 
-function updateControls() { const editable=Boolean(state.job?.plan),recovery=state.job?.recovery;$('retryJob').hidden=!recovery;$('retryJob').disabled=state.active;$('retryJob').textContent=recovery?.label||'继续制作';$('retryReview').hidden=recovery?.action!=='review';$('retryReview').disabled=state.active;$('regenerateDisplay').hidden=!editable;$('regenerateDisplay').disabled=state.active;$('createButton').disabled=state.active;$('quickCreate').disabled=state.active;$('savePlan').disabled=!editable||state.active;$('renderButton').disabled=!editable||state.active;$('replan').disabled=!editable||state.active;$('editInputs').hidden=!state.job;$('editInputs').disabled=state.active;$('exportButton').disabled=state.dirty||state.active||!(state.job?.can_export??['completed','review_needed'].includes(state.job?.status)); }
+function updateControls() { const editable=Boolean(state.job?.plan),blocked=currentPlanBlocked(),recovery=blocked?null:state.job?.recovery;$('retryJob').hidden=!recovery;$('retryJob').disabled=state.active;$('retryJob').textContent=recovery?.label||'继续制作';$('retryReview').hidden=recovery?.action!=='review';$('retryReview').disabled=state.active;$('regenerateDisplay').hidden=!editable;$('regenerateDisplay').disabled=state.active||blocked;$('createButton').disabled=state.active;$('quickCreate').disabled=state.active;$('savePlan').disabled=!editable||state.active;$('renderButton').disabled=!editable||state.active||blocked;$('renderButton').title=blocked?'请先修改下方指出的问题，或选择自动修正并生成。':'';$('replan').disabled=!editable||state.active;$('editInputs').hidden=!state.job;$('editInputs').disabled=state.active;$('exportButton').disabled=blocked||state.dirty||state.active||!(state.job?.can_export??['completed','review_needed'].includes(state.job?.status));if($('repairPlanButton'))$('repairPlanButton').disabled=state.active; }
 $('quickCreate').onclick=()=>$('createButton').click();
 $('createButton').onclick=async()=>{
   if(state.uploads.some(file=>file.loading))return toast('请等待附件上传完成。');
@@ -75,33 +78,65 @@ $('createButton').onclick=async()=>{
 
 async function loadJob(id) {
   if(state.dirty&&!confirm('当前文稿有未保存修改，是否放弃并打开另一个任务？'))return;
-  try{state.job=await api('/api/job?id='+encodeURIComponent(id));state.dirty=false;restoreInputs(state.job.request||{});$('contentType').value=state.job.request?.content_type||'auto';$('storyFramework').value=state.job.request?.story_framework||'auto';updateStoryHint();displayToForm(state.job.request||{});if(state.job.request?.voice)$('voice').value=state.job.request.voice;if(state.job.request?.rate)config.rate=state.job.request.rate;const savedModel=state.job.request||{};if(savedModel.api_base&&savedModel.api_base!==config.api_base)config.key='';for(const key of ['backend','api_base','model'])if(savedModel[key])config[key]=savedModel[key];settingsToForm();backendLabel();refreshPreviewSources();$('projectName').textContent=state.job.plan?.title||state.job.legacy_plan?.title||'视频任务';renderEditor();renderOutput();updateControls();refreshJobs();tab(['completed','review_needed'].includes(state.job.status)?'output':'editor');}catch(error){toast(error.message);}
+  try{state.job=await api('/api/job?id='+encodeURIComponent(id));state.dirty=false;restoreInputs(state.job.request||{});$('contentType').value=state.job.request?.content_type||'auto';$('storyFramework').value=state.job.request?.story_framework||'auto';updateStoryHint();displayToForm(state.job.request||{});if(state.job.request?.voice)$('voice').value=state.job.request.voice;if(state.job.request?.rate)config.rate=state.job.request.rate;const savedModel=state.job.request||{};if(savedModel.api_base&&savedModel.api_base!==config.api_base)config.key='';for(const key of ['backend','api_base','model'])if(savedModel[key])config[key]=savedModel[key];settingsToForm();backendLabel();refreshPreviewSources();$('projectName').textContent=state.job.plan?.title||state.job.legacy_plan?.title||'视频任务';renderEditor();renderOutput();updateControls();refreshJobs();tab(state.job.stage==='plan_review'||currentPlanBlocked()?'editor':['completed','review_needed'].includes(state.job.status)?'output':'editor');}catch(error){toast(error.message);}
 }
 function sourceURL(sourceId) { return `/api/source?job=${encodeURIComponent(state.job.id)}&id=${encodeURIComponent(sourceId)}`; }
+function reviewIssueHTML(issue){
+  const blocks=state.job.plan.blocks,bi=blocks.findIndex(block=>block.id===issue.block_id),block=blocks[bi];
+  const title=block?`第 ${bi+1} 段 · ${block.chapter||block.id}`:'整体计划';
+  const action=block?(block.shots.length===1?`<button type="button" class="secondary" data-review-shot="${bi},0">调整此镜头</button>`:`<button type="button" class="secondary" data-review-block="${bi}">定位此段</button>`):'';
+  return `<li><div class="review-issue-heading"><strong>${escapeHTML(title)}</strong>${action}</div><p>${escapeHTML(issue.reason)}</p></li>`;
+}
+function renderPlanReview(){
+  const job=state.job,plan=job?.plan,review=job?.review,blocked=currentPlanBlocked();
+  const displayChanged=displaySettingsChanged(),pending=Boolean(plan&&(state.dirty||review?.stale||displayChanged));
+  const failure=job?.status==='failed'&&!blocked?(job.error||'本次生成未完成，请查看制作日志。'):'';
+  const failureHTML=failure?`<div class="notice error" role="alert"><strong>本次生成未完成</strong><div class="review-reason">${escapeHTML(failure)}</div></div>`:'';
+  if(!plan){$('reviewBanner').innerHTML=failureHTML;return;}
+  const errors=(review?.issues||[]).filter(issue=>issue.severity==='error'),warnings=(review?.issues||[]).filter(issue=>issue.severity!=='error');
+  let html=failureHTML;
+  if(displayChanged)html+='<div class="notice warning"><strong>画面设置待复核</strong><p>画面设置生成时才提交。点击“复核并生成视频”或“用当前画面与配音设置重新生成”，程序会按新画幅与布局重新检查；“保存修改”只保存文稿和镜头。下方为上次复核意见。</p></div>';
+  if(pending&&(state.dirty||review?.stale))html+='<div class="notice warning"><strong>修改尚未复核</strong><p>保存后点击“复核并生成视频”，程序会按当前文稿和镜头重新检查。下方为上次复核意见。</p></div>';
+  if(blocked){
+    html+=`<section class="notice error plan-review-blocked" role="alert"><strong>分镜待修改 · ${errors.length||1} 项需要修改</strong><p>内容复核尚未通过，已保留文稿与分镜。请修改对应段落或镜头，再复核生成。</p>`;
+    html+=errors.length?`<ul class="review-issues">${errors.map(reviewIssueHTML).join('')}</ul>`:`<p>${escapeHTML(review?.summary||'审核没有返回具体问题，请查看制作日志。')}</p>`;
+    html+='<div class="review-repair-actions"><button type="button" id="repairPlanButton" class="primary">自动修正并生成</button><p class="small">按本次复核意见最多自动修正一次，重新复核通过后才生成。可能调整文稿与镜头；已有保护文稿仍按原文保留。</p></div></section>';
+  }else if(errors.length){html+=`<details class="notice warning"><summary>上次复核 · ${errors.length} 项修改意见</summary><ul class="review-issues">${errors.map(reviewIssueHTML).join('')}</ul></details>`;}
+  else if(!pending&&review?.ready===true){html+='<div class="notice">资料与文稿已完成自动复核。你仍可在下方修改，导出前会再次检查更改。</div>';}
+  else if(!pending&&!review){html+='<div class="notice">文稿与分镜已生成，尚无内容复核结果。</div>';}
+  if(warnings.length)html+=`<details class="notice warning"><summary>${warnings.length} 条非阻断提示</summary><ul class="review-issues">${warnings.map(reviewIssueHTML).join('')}</ul></details>`;
+  if(plan.source_issues?.length)html+=`<details class="notice"><summary>${plan.source_issues.length} 条来源说明</summary><ul class="review-issues">${plan.source_issues.map(note=>`<li>${escapeHTML(note)}</li>`).join('')}</ul></details>`;
+  $('reviewBanner').innerHTML=html;
+  $('reviewBanner').querySelectorAll('[data-review-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.reviewShot.split(',').map(Number)));
+  $('reviewBanner').querySelectorAll('[data-review-block]').forEach(button=>button.onclick=()=>{
+    const card=$('storyboard').querySelector(`[data-block-index="${button.dataset.reviewBlock}"]`);
+    if(card){card.scrollIntoView({behavior:'smooth',block:'center'});card.querySelector('[data-narration]').focus({preventScroll:true});}
+  });
+  if($('repairPlanButton'))$('repairPlanButton').onclick=async()=>{
+    if(state.active||!currentPlanBlocked())return;
+    $('autoRepair').checked=true;
+    await $('renderButton').onclick();
+  };
+}
 function renderEditor() {
   const job=state.job, plan=job?.plan;
   $('editorBriefWrap').hidden=!plan;$('editorBrief').value=job?.request?.brief||'';
   const failure=job?.status==='failed'?(job.error||'本次生成未完成，请查看制作日志。'):'';
-  const failureHTML=failure?`<div class="notice error" role="alert"><strong>本次生成未完成</strong><div style="margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere">${escapeHTML(failure)}</div></div>`:'';
-  $('reviewBanner').innerHTML=failureHTML;
+  renderPlanReview();
   if(!plan){$('editorSummary').textContent=failure?'文稿与分镜尚未生成，请根据下方具体错误处理。':job?.legacy_plan?'这是旧版任务，可在“预览与导出”播放；新建任务后支持可视化编辑。':'先添加资料，AI 会生成文稿与分镜。';$('storyboard').innerHTML='';return;}
   const characters=plan.blocks.reduce((n,block)=>n+block.narration.length,0);
   $('editorSummary').textContent=`${plan.blocks.length} 段讲解 · ${characters} 字 · 可修改文案、换镜头、拖动裁切图表`;
-  const issues=[...(plan.source_issues||[]),...(job.review?.issues||[]).map(issue=>`${issue.severity==='error'?'需要处理':'提示'}：${issue.reason}`)];
-  if(job.review?.ready===false&&!job.review.issues?.length)issues.push('需要处理：'+(job.review.summary||'内容复核未通过，未返回具体问题，请查看制作日志。'));
-  const reviewHTML=issues.length?`<div class="notice ${job.review?.ready===false?'error':'warning'}"><details ${job.review?.ready===false?'open':''}><summary>已完成 AI 内容复核 · ${issues.length} 条${job.review?.ready===false?'需要处理的问题':'制作提示'}，点击查看</summary><div style="margin-top:9px">${issues.map(escapeHTML).join('<br>')}</div></details></div>`:job.review?.ready===true?'<div class="notice">资料与文稿已完成自动复核。你仍可在下方修改，导出前会再次检查更改。</div>':'<div class="notice">文稿与分镜已生成，尚无内容复核结果。</div>';
-  $('reviewBanner').innerHTML=failureHTML+reviewHTML;
-  $('storyboard').innerHTML=plan.blocks.map((block,bi)=>`<article class="story-card"><div class="block-index">${String(bi+1).padStart(2,'0')}</div><div><div class="block-heading"><input aria-label="第${bi+1}段章节" data-chapter="${bi}" maxlength="20" value="${escapeHTML(block.chapter)}"></div><textarea aria-label="第${bi+1}段文稿" data-narration="${bi}" rows="4">${escapeHTML(block.narration)}</textarea><div class="evidence-note">${block.evidence.length?`${block.evidence.length} 条原文依据 · ${block.evidence.map(item=>escapeHTML(item.quote.slice(0,38))+'…').join(' / ')}`:'文案／画面讲解，暂无逐句文字依据'}</div></div><div class="shot-list">${block.shots.map((shot,si)=>`<button class="shot-mini" data-shot="${bi},${si}">${['page','image'].includes(shot.kind)?`<img src="${sourceURL(shot.source_id)}" alt="素材预览" loading="lazy">`:'<span style="font-size:23px;padding:0 9px">'+(shot.kind==='video'?'▷':'▤')+'</span>'}<span>${escapeHTML(shot.label||'讲解画面')}<small>${({page:'PDF 原图',image:'提供的图片',video:'原视频',card:'讲解卡片',diagram:'旁白驱动动态图'})[shot.kind]} · ${escapeHTML(plannedShotTiming(shot))}${shot.cue?' · 读到“'+escapeHTML(shot.cue)+'”切入':''}</small></span></button>`).join('')}</div></article>`).join('');
-  $('storyboard').querySelectorAll('[data-narration]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.narration)].narration=input.value;state.dirty=true;updateControls();renderMeasuredSegments(false);});
-  $('storyboard').querySelectorAll('[data-chapter]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.chapter)].chapter=input.value;state.dirty=true;updateControls();renderMeasuredSegments(false);});
+  $('storyboard').innerHTML=plan.blocks.map((block,bi)=>`<article class="story-card" data-block-index="${bi}"><div class="block-index">${String(bi+1).padStart(2,'0')}</div><div><div class="block-heading"><input aria-label="第${bi+1}段章节" data-chapter="${bi}" maxlength="20" value="${escapeHTML(block.chapter)}"></div><textarea aria-label="第${bi+1}段文稿" data-narration="${bi}" rows="4">${escapeHTML(block.narration)}</textarea><div class="evidence-note">${block.evidence.length?`${block.evidence.length} 条原文依据 · ${block.evidence.map(item=>escapeHTML(item.quote.slice(0,38))+'…').join(' / ')}`:'文案／画面讲解，暂无逐句文字依据'}</div></div><div class="shot-list">${block.shots.map((shot,si)=>`<button class="shot-mini" data-shot="${bi},${si}">${['page','image'].includes(shot.kind)?`<img src="${sourceURL(shot.source_id)}" alt="素材预览" loading="lazy">`:'<span style="font-size:23px;padding:0 9px">'+(shot.kind==='video'?'▷':'▤')+'</span>'}<span>${escapeHTML(shot.label||'讲解画面')}<small>${({page:'PDF 原图',image:'提供的图片',video:'原视频',card:'讲解卡片',diagram:'旁白驱动动态图'})[shot.kind]} · ${escapeHTML(plannedShotTiming(shot))}${shot.cue?' · 读到“'+escapeHTML(shot.cue)+'”切入':''}</small></span></button>`).join('')}</div></article>`).join('');
+  $('storyboard').querySelectorAll('[data-narration]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.narration)].narration=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
+  $('storyboard').querySelectorAll('[data-chapter]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.chapter)].chapter=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
   $('storyboard').querySelectorAll('[data-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.shot.split(',').map(Number)));
 }
-async function savePlan() { if(!state.job?.plan)throw Error('请先生成文稿与分镜。');await requireDisplayServer();const saved=await api('/api/plan',{method:'POST',body:JSON.stringify({job_id:state.job.id,plan:state.job.plan,brief:$('editorBrief').value,content_type:$('contentType').value,story_framework:$('storyFramework').value})});state.job.request={...(state.job.request||{}),brief:$('editorBrief').value,script:saved.script??state.job.request?.script??'',_brief_revision:saved.brief_revision,content_type:$('contentType').value,story_framework:$('storyFramework').value};$('brief').value=$('editorBrief').value;state.job.status='prepared';state.job.error=null;state.job.recovery=null;state.job.can_export=false;if(state.job.final_review)state.job.final_review.stale=true;state.dirty=false;renderEditor();renderOutput();updateControls(); }
+async function savePlan() { if(!state.job?.plan)throw Error('请先生成文稿与分镜。');await requireDisplayServer();const saved=await api('/api/plan',{method:'POST',body:JSON.stringify({job_id:state.job.id,plan:state.job.plan,brief:$('editorBrief').value,content_type:$('contentType').value,story_framework:$('storyFramework').value})});state.job.request={...(state.job.request||{}),brief:$('editorBrief').value,script:saved.script??state.job.request?.script??'',_brief_revision:saved.brief_revision,content_type:$('contentType').value,story_framework:$('storyFramework').value};$('brief').value=$('editorBrief').value;state.job.status='prepared';state.job.error=null;state.job.recovery=null;state.job.can_export=false;if(state.dirty){state.job.stage=null;if(state.job.review)state.job.review.stale=true;}if(state.job.final_review)state.job.final_review.stale=true;state.dirty=false;renderEditor();renderOutput();updateControls(); }
 $('savePlan').onclick=async()=>{try{await savePlan();toast('文稿与镜头修改已保存。');}catch(error){toast(error.message);}};
 $('renderButton').onclick=async()=>{try{validateDisplayForm();await requireDisplayServer();await savePlan();await api('/api/render',{method:'POST',body:JSON.stringify({job_id:state.job.id,...modelSettings(),content_type:$('contentType').value,story_framework:$('storyFramework').value,display:displaySettings(),final_review:$('finalReview').checked,auto_repair:$('autoRepair').checked,speech:{voice:$('voice').value,rate:config.rate}})});state.active=true;state.job.status='processing';renderOutput();updateControls();$('taskStatus').hidden=false;tab('output');poll();}catch(error){toast(error.message);}};
 $('replan').textContent='按文稿新建分镜';
 $('reviewBanner').insertAdjacentHTML('beforebegin','<details id="editorBriefWrap" class="panel" hidden><summary>修改创作要求</summary><label for="editorBrief">受众、重点和画面要求</label><textarea id="editorBrief" rows="4" maxlength="20000"></textarea><p class="small muted">保存后按新要求重新复核；已生成的视频保留，重新生成后才能对应本次修改。</p></details>');
-$('editorBrief').oninput=()=>{if(state.job){state.job.request={...(state.job.request||{}),brief:$('editorBrief').value};state.dirty=true;updateControls();renderMeasuredSegments(false);}};
+$('editorBrief').oninput=()=>{if(state.job){state.job.request={...(state.job.request||{}),brief:$('editorBrief').value};state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);}};
 $('replan').setAttribute('aria-describedby','replanHint');
 $('reviewBanner').insertAdjacentHTML('beforebegin','<p id="replanHint" class="small muted" style="margin-bottom:16px">删改文稿后，可用“按文稿新建分镜”重新安排镜头：逐字保留当前文稿，复用本任务原始资料，另建任务。原任务与已有成片保留，新分镜确认后再制作。</p>');
 $('replan').onclick=async()=>{
@@ -154,7 +189,7 @@ function openShot(bi,si) {
   $('shotSource').value=['card','diagram'].includes(shot.kind)?shot.kind:shot.source_id;$('shotIn').value=shot.in;$('shotDuration').value=shot.duration;$('shotLabel').value=shot.label;$('shotCue').value=shot.cue;$('shotCardText').value=shot.card_text;
   updateShotSource();$('shotDialog').showModal();
 }
-function updateShotSource(){const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value);const image=['page','image'].includes(source?.type);$('cropWrap').hidden=!image;$('cropHint').hidden=!image;$('focusControl').hidden=!image;$('keepControl').hidden=source?.type!=='video';$('cropHint').textContent='拖选裁切范围；勾选高亮则只加框，保留上下文。';$('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=source?.type!=='video';if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}updateShotPreview();}
+function updateShotSource(){const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value);const image=['page','image'].includes(source?.type);$('cropWrap').hidden=!image;$('cropHint').hidden=!image;$('focusControl').hidden=!image;$('keepControl').hidden=source?.type!=='video';$('cropHint').textContent='拖选裁切范围；勾选高亮只加框，保留原裁图。需要去掉多余内容时，先取消勾选高亮，再拖选要保留的区域。';$('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=source?.type!=='video';if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}updateShotPreview();}
 $('shotSource').onchange=()=>{state.crop=[0,0,1,1];updateShotSource();};
 function drawCrop(){const [x0,y0,x1,y1]=state.crop;$('cropBox').style.cssText=`left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%;`;}
 let cropStart=null;
@@ -169,7 +204,7 @@ async function poll(){if(state.polling)return;state.polling=true;try{const wasAc
   if(result.job_id&&(result.active||wasActive)){$('taskStatus').hidden=false;$('taskLogs').textContent=result.logs.join('\n');const stage=[...result.logs].reverse().find(line=>/^【(资料读取|文稿与分镜|成片与导出)】/.test(line));const match=stage?.match(/^【([^】]+)】\s*(.*)/);$('taskTitle').textContent=result.active?(match?match[1]+' · '+match[2]:'正在准备任务…'):'本次处理结束';$('progressFill').style.width=(result.active?({资料读取:20,文稿与分镜:50,成片与导出:85}[match?.[1]]||8):100)+'%';$('taskSpinner').hidden=!result.active;$('cancelTask').hidden=!result.active;
     // Global worker activity must not replace the editor's selected job. Its
     // plan, source URLs and visible controls all belong to the viewed job.
-    if(wasActive&&!result.active){if(state.job?.id===result.job_id){await loadJob(result.job_id);if(state.job?.id===result.job_id)toast(state.job.status==='completed'?'视频已生成。':state.job.status==='prepared'?'文稿与分镜已准备。':state.job.error||'任务已停止。');}await refreshJobs();}
+    if(wasActive&&!result.active){if(state.job?.id===result.job_id){await loadJob(result.job_id);if(state.job?.id===result.job_id)toast(state.job.status==='review_needed'&&state.job.stage==='plan_review'?'分镜待修改，具体问题已列在文稿与分镜中。':state.job.status==='completed'?'视频已生成。':state.job.status==='prepared'?'文稿与分镜已准备。':state.job.error||'任务已停止。');}await refreshJobs();}
   }previousActive=result.active;
 }catch(error){console.error(error);}finally{state.polling=false;}}
 $('cancelTask').onclick=async()=>{try{await api('/api/cancel',{method:'POST',body:'{}'});toast('已停止制作，资料和配音缓存保留。');}catch(error){toast(error.message);}};

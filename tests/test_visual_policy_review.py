@@ -98,6 +98,40 @@ class VisualPolicyReviewTests(unittest.TestCase):
             self.assertIn(json.dumps(self.timeline, ensure_ascii=False), call.args[0])
             self.assertIn(self.plan['blocks'][0]['narration'], call.args[0])
 
+    def test_all_auditors_distinguish_sourced_reports_from_promised_visual_observation(self):
+        prompts = []
+        def reviewer(prompt, *args):
+            prompts.append(prompt)
+            return copy.deepcopy(OK)
+        with patch('studio_engine.call_ai', side_effect=reviewer):
+            engine.review_plan(self.job, self.plan, [], self.request)
+        self.final(reviewer)
+        self.assertEqual(len(prompts), 3)
+        for prompt in prompts:
+            self.assertIn('Distinguish a sourced factual report from a promise', prompt)
+            self.assertIn('does not have to independently prove every narrated fact', prompt)
+            self.assertIn('wrong subject or condition', prompt)
+            self.assertIn('false causal claim', prompt)
+            self.assertIn('promised observation or essential comparison', prompt)
+        self.assertIn('旁白承诺观众从该画面直接观察或比较', prompts[0])
+        self.assertIn('不服务必要的原句讲解', prompts[0])
+        self.assertIn('无关素材当成证据时ready=false', prompts[0])
+
+    def test_final_gate_keeps_error_and_not_ready_as_independent_blockers(self):
+        warning = {'severity': 'warning', 'block_id': 'scope',
+                   'reason': 'Related illustration has an unnecessary secondary panel.'}
+        error = {'severity': 'error', 'block_id': 'scope',
+                 'reason': 'The narration promises a directly visible comparison, '
+                           'but the crop removes the baseline needed to interpret it.'}
+        for verdict in ({**OK, 'issues': [error]},
+                        {**OK, 'ready': False, 'issues': [warning]},
+                        {**OK, 'issues': [warning]}):
+            with self.subTest(verdict=verdict):
+                result = self.final(Mock(side_effect=[copy.deepcopy(verdict), copy.deepcopy(OK)]))
+                self.assertEqual(result['ready'], verdict['ready'] and verdict['issues'] == [warning])
+                self.assertEqual(result['issues'], verdict['issues'])
+                self.assertTrue(result['review_complete'])
+
     def test_static_wide_figure_is_not_rejected_by_file_type_or_shape(self):
         canvas = Image.new('RGB', (960, 240), 'white')
         draw = ImageDraw.Draw(canvas)

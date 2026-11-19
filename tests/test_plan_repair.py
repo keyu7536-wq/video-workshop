@@ -10,6 +10,7 @@ import paper_video as pv
 import studio_engine as engine
 from studio_plan_repair import repair_fingerprint,repair_plan_once
 from studio_story import STORY_POLICY_VERSION
+from studio_display import effective_display_settings
 
 
 TEXT='这段说明依据来源展开，演示和结果需要分别解释。'
@@ -41,7 +42,8 @@ def setup_job(root,request=None,review=None):
     value=plan();original_review=copy.deepcopy(review or BLOCKED)
     original_review.update(_plan_hash=engine.plan_hash(value),_content_type='general',
                           _story_framework='auto',_story_policy_version=STORY_POLICY_VERSION,
-                          _plan_review_context_version=engine.PLAN_REVIEW_CONTEXT_VERSION)
+                          _plan_review_context_version=engine.PLAN_REVIEW_CONTEXT_VERSION,
+                          _effective_display_settings=effective_display_settings(request))
     for name,data in [('request.json',request),('job.json',{'status':'prepared'}),
                       ('analysis/studio_plan.json',value),('analysis/sources.json',SOURCES),
                       ('analysis/images.json',[]),('review.json',original_review)]:

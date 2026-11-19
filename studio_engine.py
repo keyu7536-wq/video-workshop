@@ -22,7 +22,7 @@ from studio_render import card
 ROOT = pv.ROOT
 # Bump only when the material supplied to plan reviewers changes. This is
 # independent of story policy and never invalidates an existing video review.
-PLAN_REVIEW_CONTEXT_VERSION = 1
+PLAN_REVIEW_CONTEXT_VERSION = 3
 S = {'type': 'string'}
 DIAGRAM = pv.object_schema({
     'title':{'type':'string','maxLength':24},'note':{'type':'string','maxLength':24},
@@ -223,9 +223,8 @@ def prompt_for(sources, images, request):
     from studio_research import contract
     from studio_story import story_instruction
     from studio_context import context_sources
-    from studio_display import DISPLAY_KEYS
-    visual_settings={key:request[key] for key in DISPLAY_KEYS if key in request}
-    visual_settings.setdefault('minimal_text',False)
+    from studio_display import effective_display_settings
+    visual_settings=effective_display_settings(request)
     model_sources=context_sources(sources,request.get('_research'),current_script=request.get('script'))
     script = request.get('script', '').strip()
     rate=request.get('rate','+0%')
@@ -516,10 +515,12 @@ def execute(job, action='prepare'):
             pv.save_json(analysis/'studio_plan.json',plan)
             review=pv.load_json(job/'review.json')
             from studio_story import normalize_framework,STORY_POLICY_VERSION
+            from studio_display import effective_display_settings
             if (review.get('_plan_hash') != plan_hash(plan) or review.get('_content_type','auto')!=request.get('content_type','auto')
                     or review.get('_story_framework')!=normalize_framework(request.get('story_framework'))
                     or review.get('_story_policy_version')!=STORY_POLICY_VERSION
                     or review.get('_plan_review_context_version')!=PLAN_REVIEW_CONTEXT_VERSION
+                    or review.get('_effective_display_settings')!=effective_display_settings(request)
                     or review.get('_brief_revision')!=request.get('_brief_revision')):
                 pv.log('【文稿与分镜】文稿或审核资料已更新，重新复核内容与镜头')
                 review=review_plan(job,plan,sources,request)
@@ -527,13 +528,20 @@ def execute(job, action='prepare'):
         if action=='render':review=current_final_feedback(job,plan,request,review)
         plan,review=repair_plan_once(job,plan,sources,request,review)
         export(job,plan,sources,request)
+        blocked=not review['ready'] or any(i['severity']=='error' for i in review['issues'])
+        if blocked:
+            # A completed review asking for edits is an intentional checkpoint,
+            # not a failed worker. It must stop before voice/video generation.
+            state.update(status='review_needed',stage='plan_review',error=None)
+            state.pop('failed_action',None)
+            pv.save_json(job/'job.json',state)
+            reasons=[i['reason'] for i in review['issues'] if i['severity']=='error']
+            pv.log('【文稿与分镜】分镜待修改，尚未开始生成视频：'+
+                ('；'.join(reasons[:2])[:800] or review.get('summary','请查看具体复核结果。')))
+            return
         state.update(status='processing' if action=='render' or request.get('auto_render') else 'prepared',error=None)
         pv.save_json(job/'job.json',state)
-        blocked=not review['ready'] or any(i['severity']=='error' for i in review['issues'])
         if action=='render' or request.get('auto_render'):
-            if blocked:
-                reasons=[i['reason'] for i in review['issues'] if i['severity']=='error']
-                raise ValueError('文稿与分镜未通过内容复核：'+('；'.join(reasons[:2])[:800] or review.get('summary','请查看具体复核结果。')))
             state.update(status='processing',stage='render');pv.save_json(job/'job.json',state)
             from studio_recovery import render_with_recovery
             plan=render_with_recovery(job,request,plan,sources)
@@ -587,9 +595,8 @@ def review_plan(job,plan,sources,request):
     from studio_story import story_instruction,normalize_framework,STORY_POLICY_VERSION
     from studio_context import context_sources
     from studio_review_assets import prepare_review_assets
-    from studio_display import DISPLAY_KEYS
-    visual_settings={key:request[key] for key in DISPLAY_KEYS if key in request}
-    visual_settings.setdefault('minimal_text',False)
+    from studio_display import effective_display_settings
+    visual_settings=effective_display_settings(request)
     research=request.get('_research') or (pv.load_json(job/'research.json') if (job/'research.json').is_file() else {})
     model_sources=context_sources(sources,research,evidence=[e for b in plan['blocks'] for e in b['evidence']],current_script=request.get('script'))
     images=pv.load_json(job/'analysis/images.json') if (job/'analysis/images.json').is_file() else []
@@ -605,7 +612,7 @@ def review_plan(job,plan,sources,request):
     prompt+='\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),'seconds':request.get('seconds',100)},ensure_ascii=False)+'。按实际受众和时长平衡必要解释与节奏，不能为凑齐框架堆砌术语或段落。若用户选择论文初筛用途，检查这些内容能否支持是否精读的判断，不能以固定章节、无依据的价值评分或强行“必读”结论代替解释；未选择此用途的任务不增加该要求。'
     prompt+='\n视觉设置：'+json.dumps(visual_settings,ensure_ascii=False)
     prompt+='\n本次附图按当前分镜按需准备，包含所选PDF页/图片全图及预算内的实际bbox裁图，不限于初始抽样预览。以实际裁图判断所选内容，不能凭抽取文本顺序猜图表坐标；裁图尚未叠加focus、标题或字幕，不能当作最终成片。附图覆盖与省略项：'+json.dumps(review_assets,ensure_ascii=False)
-    prompt+='\n按视觉设置检查实际附图与所选bbox：minimal_text=true同时约束page/image里的大段正文，不只是card。明确展示大段正文而不服务必要的原句讲解，或所选多图条使当前所述行为/差异不可辨时，按具体block_id、裁切和旁白指出问题；不能一概降为审美warning。当前无成片，不能声称观察到字幕遮挡或实测停留时间；不确定的可读性风险写明待成片复查。静态图、宽图、必要图表标签和简短引用不自动判错。'
+    prompt+='\n按视觉设置检查实际附图与所选bbox：minimal_text=true同时约束page/image里的大段正文，不只是card。明确展示大段正文而不服务必要的原句讲解，或所选多图条使旁白承诺观众从该画面直接观察或比较的关键行为/差异不可辨时，按具体block_id、裁切和旁白指出问题；不能一概降为审美warning。先区分有来源的事实陈述与对画面的直接观察主张；同一对象和条件的相关图示不必独立证明全部旁白，但错误对象、条件、因果或关键裁切造成误导仍是error。当前无成片，不能声称观察到字幕遮挡或实测停留时间；不确定的可读性风险写明待成片复查。静态图、宽图、必要图表标签和简短引用不自动判错。'
     review=call_ai(prompt,[Path(item[1]) for item in images],job/'analysis',request,REVIEW_SCHEMA,'_review')
     from jsonschema import validate as check_schema
     check_schema(review,REVIEW_SCHEMA)
@@ -614,6 +621,7 @@ def review_plan(job,plan,sources,request):
     review['_story_framework']=normalize_framework(request.get('story_framework'))
     review['_story_policy_version']=STORY_POLICY_VERSION
     review['_plan_review_context_version']=PLAN_REVIEW_CONTEXT_VERSION
+    review['_effective_display_settings']=visual_settings
     if request.get('_brief_revision') is not None:review['_brief_revision']=request['_brief_revision']
     pv.save_json(job/'review.json',review)
     return review

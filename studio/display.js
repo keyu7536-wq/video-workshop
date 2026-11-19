@@ -1,9 +1,18 @@
 'use strict';
 let previewItems=[], previewMedia=null, previewToken=0, previewProtected=false;
 function displaySettings(){return {format:$('format').value,width:Number($('customWidth').value),height:Number($('customHeight').value),layout_style:$('layoutStyle').value,media_fit:$('mediaFit').value,show_sources:$('showSources').checked,show_disclosure:$('showDisclosure').checked,minimal_text:$('minimalText').checked};}
+function effectiveDisplaySettings(settings){
+  const format=settings.format||'portrait';
+  const [width,height]=({portrait:[1080,1920],landscape:[1920,1080],square:[1080,1080],reference:[720,1280]})[format]||[Number(settings.width),Number(settings.height)];
+  return {format,width,height,layout_style:settings.layout_style||'editorial',media_fit:settings.media_fit||'contain',
+    show_sources:settings.show_sources??true,show_disclosure:settings.show_disclosure??true,minimal_text:settings.minimal_text??false};
+}
+function displaySettingsChanged(){
+  return Boolean(state.job?.plan&&state.job.request&&JSON.stringify(effectiveDisplaySettings(displaySettings()))!==JSON.stringify(effectiveDisplaySettings(state.job.request)));
+}
 function displayDimensions(){const s=displaySettings();return ({portrait:[1080,1920],landscape:[1920,1080],square:[1080,1080],reference:[720,1280]})[s.format]||[s.width,s.height];}
 function validateDisplayForm(){const [w,h]=displayDimensions();if([w,h].some(n=>!Number.isInteger(n)||n<320||n>3840||n%2)||w*h>8294400||Math.max(w/h,h/w)>3)throw Error('宽高须为320～3840之间的偶数，总像素不超过4K，长宽比例不超过3:1。');}
-async function requireDisplayServer(){const health=await api('/api/health');if(health.version<11)throw Error('界面与后台版本不一致，请用项目启动脚本打开新版服务。');}
+async function requireDisplayServer(){const health=await api('/api/health');if(health.version<12)throw Error('界面与后台版本不一致，请用项目启动脚本打开新版服务。');}
 function displayToForm(s){$('format').value=s.format||'portrait';$('customWidth').value=s.width||1920;$('customHeight').value=s.height||1080;$('layoutStyle').value=s.layout_style||'editorial';$('mediaFit').value=s.media_fit||'contain';$('showSources').checked=s.show_sources??true;$('showDisclosure').checked=s.show_disclosure??true;$('minimalText').checked=s.minimal_text??false;updateDisplayPreview();}
 function previewBox(w,h){if($('layoutStyle').value==='immersive')return previewProtected?[Math.floor(w*.025),Math.floor(h*.06),Math.floor(w*.95),Math.floor(h*.78)]:[0,0,w,h];return h>w?[Math.floor(w*.035),Math.floor(h*.27),Math.floor(w*.93),Math.floor(h*.40)]:[Math.floor(w*.035),Math.floor(h*.20),Math.floor(w*.93),Math.floor(h*.57)];}
 function refreshPreviewSources(){
@@ -48,7 +57,10 @@ function updateDisplayPreview(){
   $('displaySummary').textContent=`${w} × ${h} · ${previewProtected?'PDF 页面／卡片保护：完整显示':cover?`铺满裁切，保留原图约 ${percent}%`:'完整显示，不裁切'}。${!previewMedia?'当前是示意图，请选择素材查看真实构图。':''}`;
 }
 document.addEventListener('DOMContentLoaded',()=>{
-  for(const id of ['format','customWidth','customHeight','layoutStyle','mediaFit','showSources','showDisclosure','minimalText'])$(id).addEventListener('input',updateDisplayPreview);
+  for(const id of ['format','customWidth','customHeight','layoutStyle','mediaFit','showSources','showDisclosure','minimalText'])$(id).addEventListener('input',()=>{
+    updateDisplayPreview();
+    if(state.job?.plan){renderPlanReview();updateControls();}
+  });
   $('previewSource').onchange=loadDisplayMedia;$('pickPreview').onclick=()=>$('previewFile').click();
   $('previewFile').onchange=e=>{const file=e.target.files[0];if(!file)return;if(window.localPreviewItem)URL.revokeObjectURL(window.localPreviewItem.url);const url=URL.createObjectURL(file);window.localPreviewItem={id:url,name:file.name,url,video:file.type.startsWith('video/')};refreshPreviewSources();$('previewSource').value=url;loadDisplayMedia();};
   const show=()=>{tab('create');$('displayPreview').open=true;$('displayPreview').scrollIntoView({behavior:'smooth',block:'center'});};$('editDisplay').onclick=show;$('outputDisplay').onclick=show;

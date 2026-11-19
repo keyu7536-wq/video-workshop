@@ -211,5 +211,82 @@ class RecoveryHTTPTests(unittest.TestCase):
         status,_=self.post('/api/review',{'job_id':job.name});self.assertEqual(status,400)
         self.http.manager.start.assert_not_called()
 
+    def test_plan_gate_rejects_old_video_export_and_save_returns_to_pending_edit(self):
+        job=self.job(status='review_needed',failed_action='render',video=True)
+        self.unavailable_review(job)
+        state=pv.load_json(job/'job.json');state.update(stage='plan_review',error=None)
+        pv.save_json(job/'job.json',state)
+        rejected={'ready':False,'issues':[{'severity':'error','block_id':'b1','reason':'Fix the selected figure.'}],
+                  '_plan_hash':engine.plan_hash(plan())}
+        pv.save_json(job/'review.json',rejected)
+        before={name:(job/name).read_bytes() for name in ('request.json','job.json','output/video.mp4')}
+        for endpoint in ('/api/export','/api/review'):
+            code,result=self.post(endpoint,{'job_id':job.name})
+            self.assertEqual(code,400,result)
+        self.http.manager.start.assert_not_called()
+        self.assertEqual(before,{name:(job/name).read_bytes() for name in before})
+        revised=plan();revised['blocks'][0]['narration']='人工修正后的旁白。'
+        code,result=self.post('/api/plan',{'job_id':job.name,'plan':revised})
+        self.assertEqual(code,200,result)
+        state=pv.load_json(job/'job.json')
+        self.assertEqual(state['status'],'prepared');self.assertIsNone(state['stage'])
+        self.assertIsNone(state['error']);self.assertNotIn('failed_action',state)
+        self.assertEqual(pv.load_json(job/'review.json'),rejected)
+        current=server.snapshot(job)
+        self.assertFalse(current['can_export']);self.assertTrue(current['review']['stale'])
+        self.assertEqual(pv.load_json(job/'review.json'),rejected)
+        self.assertEqual((job/'output/video.mp4').read_bytes(),before['output/video.mp4'])
+
+    def test_same_plan_with_changed_requirements_marks_old_review_stale_only_in_response(self):
+        for index,change in enumerate(({'brief':'解释得更适合初学者。'},
+                {'story_framework':'source_order'},{'content_type':'paper'})):
+            with self.subTest(change=change):
+                job=self.job('requirements_'+str(index),status='review_needed')
+                current_plan=plan();engine.validate(current_plan,[])
+                pv.save_json(job/'analysis/studio_plan.json',current_plan)
+                state=pv.load_json(job/'job.json');state.update(stage='plan_review',error=None)
+                pv.save_json(job/'job.json',state)
+                review={'ready':False,'issues':[{'severity':'error','block_id':'b1','reason':'Previous requirements'}],
+                    '_plan_hash':engine.plan_hash(current_plan),'_content_type':'auto','_story_framework':'auto'}
+                pv.save_json(job/'review.json',review)
+                before_review=(job/'review.json').read_bytes()
+                before_plan=(job/'analysis/studio_plan.json').read_bytes()
+                self.assertFalse(server.snapshot(job)['review']['stale'])
+                code,result=self.post('/api/plan',{'job_id':job.name,'plan':current_plan,**change})
+                self.assertEqual(code,200,result)
+                current=server.snapshot(job)
+                self.assertEqual(current['status'],'prepared');self.assertIsNone(current['stage'])
+                self.assertTrue(current['review']['stale'])
+                self.assertEqual((job/'review.json').read_bytes(),before_review)
+                self.assertEqual((job/'analysis/studio_plan.json').read_bytes(),before_plan)
+
+    def test_display_change_marks_review_stale_but_unused_custom_size_does_not(self):
+        from studio_display import effective_display_settings
+        for index,(display,expected_stale) in enumerate((
+                ({'format':'landscape','width':1600,'height':900},True),
+                ({'format':'portrait','width':1280,'height':720},False))):
+            with self.subTest(display=display):
+                job=self.job('display_review_'+str(index),status='review_needed')
+                request=pv.load_json(job/'request.json')
+                request.update(format='portrait',width=1600,height=900)
+                pv.save_json(job/'request.json',request)
+                state=pv.load_json(job/'job.json');state.update(stage='plan_review',error=None)
+                pv.save_json(job/'job.json',state)
+                review={'ready':False,'issues':[{'severity':'error','block_id':'b1','reason':'Figure readability'}],
+                    '_plan_hash':engine.plan_hash(plan()),'_content_type':'auto','_story_framework':'auto',
+                    '_effective_display_settings':effective_display_settings(request)}
+                pv.save_json(job/'review.json',review)
+                before_review=(job/'review.json').read_bytes()
+                before_plan=(job/'analysis/studio_plan.json').read_bytes()
+                self.assertFalse(server.snapshot(job)['review']['stale'])
+                code,result=self.post('/api/render',{'job_id':job.name,'display':display})
+                self.assertEqual(code,200,result)
+                current=server.snapshot(job)
+                self.assertEqual(current['review']['stale'],expected_stale)
+                self.assertEqual((job/'review.json').read_bytes(),before_review)
+                self.assertEqual((job/'analysis/studio_plan.json').read_bytes(),before_plan)
+                self.assertEqual(pv.load_json(job/'request.json')['width'],display['width'])
+                self.assertEqual(pv.load_json(job/'request.json')['height'],display['height'])
+
 
 if __name__=='__main__':unittest.main()

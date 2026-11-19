@@ -143,5 +143,18 @@ class StudioProcessTests(unittest.TestCase):
         self.assertIsNone(state['error']);self.assertEqual(state['last_exit_code'],0)
         self.assertIsNone(state['failed_action']);self.assertIsNone(state['stage'])
 
+    def test_manager_preserves_successful_plan_gate_without_claiming_worker_failure(self):
+        script=('import json,sys\nfrom pathlib import Path\n'
+            'path=Path(sys.argv[2])/"job.json"\nstate=json.loads(path.read_text())\n'
+            'state.update(status="review_needed",stage="plan_review",error=None)\n'
+            'state.pop("failed_action",None)\npath.write_text(json.dumps(state))\n')
+        for action in ('prepare','resume','render'):
+            with self.subTest(action=action):
+                manager,state=self.start_fixture(script,action=action)
+                self.assertEqual((state['status'],state['stage']),('review_needed','plan_review'))
+                self.assertIsNone(state['error']);self.assertNotIn('failed_action',state)
+                self.assertEqual(state['last_exit_code'],0)
+                self.assertFalse(manager.snapshot()['active'])
+
 
 if __name__=='__main__':unittest.main()
