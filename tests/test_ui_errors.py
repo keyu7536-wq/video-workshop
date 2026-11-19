@@ -130,6 +130,45 @@ class JobErrorUITests(unittest.TestCase):
     def wait_for_budget(self,budget):
         self.page.wait_for_function('expected => JSON.stringify(state.job?.repair_budget) === JSON.stringify(expected)',arg=budget)
 
+    def test_job_title_search_is_case_insensitive_refreshable_and_preserves_current_draft(self):
+        self.open_job('prepared')
+        draft='当前任务的未保存文案不应被搜索或刷新改变。'
+        self.page.locator('[data-narration="0"]').fill(draft)
+        before=self.page.evaluate('JSON.stringify({job:state.job,dirty:state.dirty})')
+        job=self.root/'jobs/prepared'
+        saved={name:(job/name).read_bytes() for name in ('request.json','analysis/studio_plan.json')}
+        listed=[{'id':'prepared','title':'Alpha Notes','status':'prepared'},
+                {'id':'render_failed','title':'beta Demo','status':'failed'},
+                {'id':'missing_plan','title':'Alpha Charts','status':'failed'}]
+        self.page.route('**/api/jobs',lambda route:route.fulfill(json={'jobs':listed}))
+        mutations=[]
+        self.page.on('request',lambda request:mutations.append(request.url) if request.method!='GET' else None)
+        def ids():return self.page.locator('#jobList [data-job]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.job)')
+        def refresh(expected):
+            with self.page.expect_response(lambda response:response.url.endswith('/api/jobs')):
+                self.page.locator('#refreshJobs').click()
+            self.page.wait_for_function('expected => JSON.stringify([...document.querySelectorAll("#jobList [data-job]")].map(n=>n.dataset.job)) === JSON.stringify(expected)',arg=expected)
+        refresh(['prepared','render_failed','missing_plan'])
+        self.page.locator('#jobSearch').fill('  aLPha  ')
+        self.assertEqual(ids(),['prepared','missing_plan'])
+        listed.append({'id':'review_summary','title':'ALPHA Latest','status':'prepared'})
+        refresh(['prepared','missing_plan','review_summary'])
+        self.assertEqual(self.page.locator('#jobSearch').input_value(),'  aLPha  ')
+        self.page.locator('#jobSearch').fill(' bEtA ')
+        self.assertEqual(ids(),['render_failed'])
+        self.page.locator('#jobSearch').fill('no matching title')
+        self.assertEqual(ids(),[])
+        self.assertIn('没有匹配的作品',self.page.locator('#jobList').inner_text())
+        self.page.locator('#jobSearch').fill('')
+        self.assertEqual(ids(),['prepared','render_failed','missing_plan','review_summary'])
+        self.assertTrue(self.page.locator('[data-job="prepared"]').evaluate('(node)=>node.classList.contains("selected")'))
+        self.assertEqual(self.page.evaluate('JSON.stringify({job:state.job,dirty:state.dirty})'),before)
+        self.assertEqual(self.page.locator('[data-narration="0"]').input_value(),draft)
+        self.assertTrue(self.page.locator('#view-editor').is_visible())
+        self.assertEqual(saved,{name:(job/name).read_bytes() for name in saved})
+        self.assertEqual(mutations,[])
+        self.assertEqual(self.errors,[])
+
     def test_failed_job_without_plan_keeps_the_actual_error_visible_after_reopen(self):
         self.open_job('missing_plan')
         banner=self.page.locator('#reviewBanner')

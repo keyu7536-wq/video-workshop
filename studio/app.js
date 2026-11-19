@@ -84,7 +84,15 @@ $('dropzone').onclick=()=>$('fileInput').click();$('dropzone').onkeydown=event=>
 $('fileInput').onchange=event=>{addFiles(event.target.files);event.target.value='';};
 $('dropzone').ondragover=event=>{event.preventDefault();$('dropzone').classList.add('drag');};$('dropzone').ondragleave=()=>$('dropzone').classList.remove('drag');$('dropzone').ondrop=event=>{event.preventDefault();$('dropzone').classList.remove('drag');addFiles(event.dataTransfer.files);};
 
-async function refreshJobs() { try { const result=await api('/api/jobs');$('jobList').innerHTML=result.jobs.length?result.jobs.map(job=>`<button class="job-button ${state.job?.id===job.id?'selected':''}" data-job="${escapeHTML(job.id)}">${escapeHTML(job.title)}<small>${jobStatusLabel(job)}</small></button>`).join(''):'<p class="small muted">你的创作会显示在这里。</p>';$('jobList').querySelectorAll('[data-job]').forEach(button=>button.onclick=()=>loadJob(button.dataset.job)); } catch(error){toast(error.message);} }
+let listedJobs=[];
+function renderJobs(){
+  const query=($('jobSearch')?.value||'').trim().toLocaleLowerCase();
+  const visible=listedJobs.filter(job=>!query||String(job.title||'').toLocaleLowerCase().includes(query));
+  $('jobList').innerHTML=visible.length?visible.map(job=>`<button class="job-button ${state.job?.id===job.id?'selected':''}" data-job="${escapeHTML(job.id)}">${escapeHTML(job.title)}<small>${escapeHTML(jobStatusLabel(job))}</small></button>`).join(''):`<p class="small muted">${query?'没有匹配的作品，试试其他关键词。':'你的创作会显示在这里。'}</p>`;
+  $('jobList').querySelectorAll('[data-job]').forEach(button=>button.onclick=()=>loadJob(button.dataset.job));
+}
+async function refreshJobs() { try { const result=await api('/api/jobs');listedJobs=result.jobs;renderJobs(); } catch(error){toast(error.message);} }
+$('jobSearch')?.addEventListener('input',renderJobs);
 $('refreshJobs').onclick=refreshJobs;
 $('newProject').onclick=()=>{if(state.active)return toast('请等待当前制作完成，或先停止任务。');state.job=null;state.dirty=false;restoreInputs();$('contentType').value='auto';$('storyFramework').value='auto';updateStoryHint();$('voice').value=appDefaults.default_voice;const saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}');config.rate=saved.rate||appDefaults.default_rate;settingsToForm();displayToForm({layout_style:'immersive',show_sources:false,show_disclosure:false,minimal_text:true});renderUploads();$('projectName').textContent='新的视频';$('taskStatus').hidden=true;$('researchPanel').innerHTML='';$('reviewBanner').innerHTML='';$('storyboard').innerHTML='';$('finalReviewPanel').innerHTML='';$('downloadLinks').innerHTML='';$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').hidden=true;$('videoEmpty').hidden=false;setPlaybackAudioJob(null);renderMeasuredSegments(false);updateControls();tab('create');refreshJobs();};
 

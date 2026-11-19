@@ -40,7 +40,7 @@ GitHub Actions 对 Windows / Linux、Python 3.11 / 3.13 执行依赖安装、浏
 
 ```bash
 python scripts/build_release.py --check
-python scripts/build_release.py --version 0.3.3
+python scripts/build_release.py --version 0.3.4
 ```
 
 构建器只选择明确允许发布的源码、测试和文档，生成 ZIP、SHA-256 校验文件及逐文件清单。已有版本不覆盖。解压到新目录，重新安装并执行回归和离线渲染，确认发布包可独立运行。

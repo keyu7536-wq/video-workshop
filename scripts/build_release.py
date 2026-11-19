@@ -152,7 +152,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=ROOT)
     parser.add_argument('--output',type=Path,default=ROOT/'dist')
-    parser.add_argument('--version',default='0.3.3')
+    parser.add_argument('--version',default='0.3.4')
     parser.add_argument('--check',action='store_true')
     args=parser.parse_args();root=args.root.resolve()
     if args.check:
