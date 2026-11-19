@@ -10,7 +10,7 @@ function durationSettingsChanged(){
   return current.duration_mode!==mode||(mode==='target'&&current.seconds!==Number(saved.seconds??100));
 }
 function updateDurationHint(){
-  $('durationHint').textContent=$('seconds').value==='auto'?'自适应按内容安排讲解，不设固定秒数；实际片长随配音和镜头确定。':'目标时长用于规划文稿，实际片长以配音和镜头为准。';
+  $('durationHint').textContent=$('seconds').value==='auto'?'不设固定秒数，按实际配音和镜头确定片长。':'按目标时长写稿，实际片长以配音和镜头为准。';
 }
 function reviewNeedsChanges(review){return Boolean(review&&(review.ready===false||(review.issues||[]).some(issue=>issue.severity==='error')));}
 function currentPlanBlocked(job=state.job){return Boolean(job?.plan&&job.status!=='failed'&&reviewNeedsChanges(job.review)&&!job.review.stale&&!(job===state.job&&(state.dirty||displaySettingsChanged()||durationSettingsChanged())));}
@@ -34,8 +34,8 @@ document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener
 }));
 
 function updateStoryHint(){
-  const order={auto:'按题材、受众和时长安排，兼顾可读性、解释深度与节奏。',problem_solution:'参考常见方法、问题、改进、具体做法和效果这些要点，按资料重点取舍、合并或调整顺序。',source_order:'沿着原文的主要内容顺序展开，根据受众与时长调整讲解深度。'}[$('storyFramework').value];
-  const scope=state.job?.plan?'讲述结构用于新写稿；当前任务已有文稿，保存、重新配镜头和重新生成均保留原文。需要按新结构重写时，请新建任务并选择根据资料写稿。':state.mode==='script'?'口播按原文保留，框架仅供镜头组织参考，不会改写或重排已有文案。':$('article').value.trim()?'文章作为参考资料生成新文稿；需要逐字保留时，请选择“使用我的文案”。':'根据资料生成文稿，不编造资料没有支持的环节。';
+  const order={auto:'根据资料安排讲解顺序。',problem_solution:'参考已有做法、问题、改进、方法和结果，可合并或调整顺序。',source_order:'按原文顺序讲解。'}[$('storyFramework').value];
+  const scope=state.job?.plan?'当前已有文稿，保存和重新生成均保留原文。要按新结构重写，请新建任务。':state.mode==='script'?'已有文案按原文保留，结构选项只供配镜头参考。':$('article').value.trim()?'正文用作写稿参考。需要逐字保留，请选择“使用我的文案”。':'只使用资料支持的内容。';
   $('storyFrameworkHint').textContent=order+' '+scope;
 }
 for(const id of ['contentType','storyFramework'])$(id).onchange=()=>{if(state.job?.plan){state.dirty=true;renderPlanReview();updateControls();}updateStoryHint();};
@@ -44,7 +44,7 @@ $('article').addEventListener('input',updateStoryHint);
 function syncSpeechControls(){
   const local=$('voice').value.startsWith('qwen:');
   for(const id of ['rate','speechRate']){$(id).value=config.rate;$(id).disabled=local;}
-  $('speechRateHint').textContent=local?'本地 Qwen 按独立配音配置生成，不使用百分比语速；切回 Edge 音色后恢复你的语速选择。':'语速会用于下一次配音；调整后需重新生成，已有成片保持原来的声音。';
+  $('speechRateHint').textContent=local?'本地 Qwen 使用独立配音设置，不使用百分比语速。切回 Edge 后恢复所选语速。':'修改语速后需重新生成，已有视频的声音不变。';
 }
 function persistSettings(){const {key,...publicSettings}=config;localStorage.setItem('video-workshop-settings',JSON.stringify({...publicSettings,workflow_version:1}));}
 function restoreSpeechSettings(request={}){
@@ -163,7 +163,7 @@ function renderEditor() {
   renderPlanReview();
   if(!plan){$('editorSummary').textContent=failure?'文稿与分镜尚未生成，请根据下方具体错误处理。':job?.legacy_plan?'这是旧版任务，可在“预览与导出”播放；新建任务后支持可视化编辑。':'先添加资料，AI 会生成文稿与分镜。';$('storyboard').innerHTML='';return;}
   const characters=plan.blocks.reduce((n,block)=>n+block.narration.length,0);
-  $('editorSummary').textContent=`${plan.blocks.length} 段讲解 · ${characters} 字 · 可修改文案、换镜头、拖动裁切图表`;
+  $('editorSummary').textContent=`${plan.blocks.length} 段 · ${characters} 字`;
   $('storyboard').innerHTML=plan.blocks.map((block,bi)=>`<article class="story-card" data-block-index="${bi}"><div class="block-index">${String(bi+1).padStart(2,'0')}</div><div><div class="block-heading"><input aria-label="第${bi+1}段章节" data-chapter="${bi}" maxlength="20" value="${escapeHTML(block.chapter)}"></div><textarea aria-label="第${bi+1}段文稿" data-narration="${bi}" rows="4">${escapeHTML(block.narration)}</textarea><div class="evidence-note">${block.evidence.length?`${block.evidence.length} 条原文依据 · ${block.evidence.map(item=>escapeHTML(item.quote.slice(0,38))+'…').join(' / ')}`:'文案／画面讲解，暂无逐句文字依据'}</div></div><div class="shot-list">${block.shots.map((shot,si)=>`<button class="shot-mini" data-shot="${bi},${si}">${['page','image'].includes(shot.kind)?`<img src="${sourceURL(shot.source_id)}" alt="素材预览" loading="lazy">`:'<span style="font-size:23px;padding:0 9px">'+(shot.kind==='video'?'▷':'▤')+'</span>'}<span>${escapeHTML(shot.label||'讲解画面')}<small>${({page:'PDF 原图',image:'提供的图片',video:'原视频',card:'讲解卡片',diagram:'旁白驱动动态图'})[shot.kind]} · ${escapeHTML(plannedShotTiming(shot))}${shot.cue?' · 读到“'+escapeHTML(shot.cue)+'”切入':''}</small></span></button>`).join('')}</div></article>`).join('');
   $('storyboard').querySelectorAll('[data-narration]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.narration)].narration=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
   $('storyboard').querySelectorAll('[data-chapter]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.chapter)].chapter=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});

@@ -158,10 +158,10 @@ function initializeShotPreviews(){
     <video id="shotVideoPreview" controls preload="metadata" playsinline muted></video>
     <p id="shotVideoHint" class="small"></p><button type="button" class="secondary" id="playSourceClip">播放所选原素材片段</button>
     <a id="downloadSourceClip" target="_blank" rel="noopener">打开原素材</a>
-    <p class="small muted">这里播放原素材，尚未加入成片旁白、字幕或裁切。可修改下方起点与取片秒数再播放。</p></section>
+    <p class="small muted">原素材预览，不含成片旁白、字幕和裁切。修改起点或取片秒数后可重播。</p></section>
     <section id="generatedVisualPreview" class="generated-preview" hidden></section>`);
   $('videoPlayer').closest('.player-card').insertAdjacentHTML('beforeend',`<p id="outputDraftNotice" class="notice warning" hidden>文稿或分镜有未保存修改，当前播放的是之前的成片。保存并重新生成后，才会包含这些修改。</p><section id="renderedTimeline" hidden>
-    <h3>逐镜头查看成片</h3><p class="small muted">按实际配音后的时间轴播放，包含最终画面、旁白和字幕。这里是同一成片的时间段，不是独立视频文件。</p><div id="renderedSegments" class="segment-list"></div></section>`);
+    <h3>逐镜头查看成片</h3><p class="small muted">点击镜头，播放成片中对应的画面、旁白和字幕。</p><div id="renderedSegments" class="segment-list"></div></section>`);
   document.body.insertAdjacentHTML('beforeend',`<dialog id="segmentDialog" class="shot-dialog">
     <div class="modal-heading"><h2 id="segmentTitle">成片片段</h2><button type="button" class="icon-button" id="closeSegment" aria-label="关闭">×</button></div>
     <video id="segmentVideo" controls preload="metadata" playsinline></video><p id="segmentHint" class="small"></p>

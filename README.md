@@ -10,7 +10,7 @@
 
 视频工坊提供本地浏览器界面：模型负责阅读资料、写稿与安排分镜，语音服务生成配音，FFmpeg 根据真实音频时长合成画面和字幕。支持本机已登录的 Codex CLI，或兼容的图片理解模型 API。它使用已有素材与图表，不是从提示词生成所有新画面的文生视频模型。
 
-当前版本：`0.3.4`。更新记录见 [CHANGELOG](CHANGELOG.md)。源码许可证：[MIT](LICENSE)。第三方依赖、模型和用户素材各自适用的条件见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+当前版本：`0.3.5`。更新记录见 [CHANGELOG](CHANGELOG.md)。源码许可证：[MIT](LICENSE)。第三方依赖、模型和用户素材各自适用的条件见 [第三方说明](THIRD_PARTY_NOTICES.md)。
 
 [快速开始](#安装与打开) · [三步流程](#第一次使用) · [作者项目素材](docs/media-sources.md) · [配置与排错](docs/configuration.md) · [验证与发布](docs/testing.md) · [参与开发](CONTRIBUTING.md)
 
@@ -143,7 +143,7 @@ python scripts/smoke_render.py
 
 ```bash
 python scripts/build_release.py --check
-python scripts/build_release.py --version 0.3.4
+python scripts/build_release.py --version 0.3.5
 ```
 
 输出位于 `dist/`，包含源码目录、ZIP、SHA-256 校验文件和逐文件清单。打包器使用明确的文件清单，排除运行数据，并检查部分高置信度敏感信息模式；这不代替人工检查。已有版本不会被覆盖，请换版本号或指定新的输出目录。贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

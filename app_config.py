@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 APP_ID = 'video-workshop'
-VERSION = '0.3.4'
+VERSION = '0.3.5'
 PROTOCOL_VERSION = 14
 ROOT = Path(__file__).resolve().parent
 

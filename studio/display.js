@@ -46,7 +46,7 @@ function updateDisplayPreview(){
   function textLine(text,top,size,color='white'){ctx.font=`600 ${Math.max(12,size)}px "Microsoft YaHei",sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle='#080e15aa';ctx.fillRect(margin-5,top-3,Math.min(w-2*margin+10,ctx.measureText(text).width+10),size*1.35);ctx.fillStyle=color;ctx.fillText(text,margin,top,w-2*margin);}
   if(!(immersive&&previewProtected)){textLine('视频标题（仅开场）',h*(immersive?.025:h>w?.10:.045),unit*(immersive?.040:h>w?.061:.046));
   textLine('当前章节',h*(immersive?.085:h>w?.175:.12),unit*(immersive?.032:h>w?.042:.031),'#9ed5ac');}
-  textLine('字幕示例：画面跟随讲解展开',h*(immersive?.85:h>w?.82:.85),unit*(immersive?.050:h>w?.051:.039));
+  textLine('字幕显示位置',h*(immersive?.85:h>w?.82:.85),unit*(immersive?.050:h>w?.051:.039));
   if($('showSources').checked)textLine('素材来源 · 页码',h*(immersive?.94:h>w?.77:.91),unit*.022);
   if($('showDisclosure').checked)textLine('AI 辅助制作',h*.965,unit*.018);
   const crop=$('cropCanvas'),cc=crop.getContext('2d');crop.width=600;crop.height=Math.max(1,Math.round(600*sh/sw));cc.drawImage(original,0,0,crop.width,crop.height);
