@@ -38,6 +38,9 @@ def validate_settings(data):
     if data.get('content_type','auto') not in ('auto','paper','general'):raise ValueError('不支持此内容类型')
     if data.get('voice','zh-CN-YunyangNeural') not in ('zh-CN-YunyangNeural','zh-CN-YunxiNeural','zh-CN-YunjianNeural','zh-TW-YunJheNeural','zh-CN-YunxiaNeural','zh-CN-XiaoxiaoNeural','qwen:Uncle_Fu','qwen:Dylan','qwen:Serena','qwen:Vivian'):raise ValueError('不支持此音色')
     if data.get('rate','auto') not in ('auto','-10%','-5%','+0%','+10%','+25%','+50%'):raise ValueError('不支持此语速设置')
+    if 'adaptive_base_rate' in data:
+        from studio_voice import normalize_base_rate
+        normalize_base_rate(data['adaptive_base_rate'])
     from studio_display import validate_display
     validate_display(data)
     formats=data.get('export_formats',[])
@@ -255,7 +258,7 @@ def snapshot(job):
                     result['preview_shots'].append({k:shot[k] for k in ('kind','label','duration','in','protect_content') if k in shot}|{'path':target.relative_to(job.resolve()).as_posix()})
     if plan_path.is_file(): result['plan']=pv.load_json(plan_path)
     elif (job/'analysis/plan.json').is_file(): result['legacy_plan']=pv.load_json(job/'analysis/plan.json')
-    for filename,key in [('request.json','request'),('review.json','review'),('output/run_report.json','report'),('publishing.json','publishing'),('research.json','research'),('output/final_review.json','final_review'),('output/exports.json','exports'),('analysis/research/manifest.json','research_manifest')]:
+    for filename,key in [('request.json','request'),('review.json','review'),('output/run_report.json','report'),('publishing.json','publishing'),('research.json','research'),('output/final_review.json','final_review'),('output/exports.json','exports'),('analysis/research/manifest.json','research_manifest'),('analysis/media_index.json','media_index')]:
         if (job/filename).is_file(): result[key]=pv.load_json(job/filename)
     sources=None
     if (job/'analysis/sources.json').is_file():
@@ -393,6 +396,18 @@ class Handler(BaseHTTPRequestHandler):
                 target=visual_preview(job,source,crop,beats,int(query.get('index',['0'])[0]),display)
                 return self.json({'url':f'/files/{job.name}/'+target.relative_to(job).as_posix(),
                     'inspection':'静态构图预览；不含真实字幕或实测时间。'})
+            if path=='/api/video-crop-preview':
+                from studio_video_crop import preview_video_crop
+                if len(parsed.query)>8192 or set(query)-{'job','id','in','duration','bbox','display','subtitle_safe'}:
+                    raise ValueError('视频裁切预览参数无效。')
+                job=job_path(query.get('job',[''])[0]);source_id=query.get('id',[''])[0]
+                source=next((s for s in pv.load_json(job/'analysis/sources.json') if s['id']==source_id),None)
+                if source is None or source.get('type')!='video':raise ValueError('请选择当前任务的视频素材。')
+                display=json.loads(query['display'][0]) if 'display' in query else pv.load_json(job/'request.json')
+                if not isinstance(display,dict):raise ValueError('画面设置无效。')
+                result=preview_video_crop(job,source,float(query.get('in',['0'])[0]),float(query.get('duration',['1'])[0]),
+                    json.loads(query.get('bbox',['[]'])[0]),display,json.loads(query.get('subtitle_safe',['false'])[0]))
+                return self.json(result)
             if path=='/api/column-preview':
                 from hashlib import sha256
                 from studio_chart_composition import render_column_crop,validate_column_crop,RENDER_VERSION
@@ -448,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
             target=target.resolve()
             if not target.is_relative_to(WEB.resolve()): raise ValueError('文件路径无效。')
             return self.file(target,head)
-        except (ValueError,OSError,KeyError) as exc: self.json({'error':str(exc)},400)
+        except (ValueError,OSError,KeyError,RuntimeError) as exc: self.json({'error':str(exc)},400)
     def do_POST(self):
         transaction=ExitStack()
         try:
@@ -490,7 +505,7 @@ class Handler(BaseHTTPRequestHandler):
                     files.append({'path':str(target),'name':meta['name']})
                 validate_settings(data)
                 from studio_display import DISPLAY_KEYS
-                request={k:data[k] for k in ('brief','script','article','links','duration_mode','seconds','voice','rate','backend','api_base','model','content_type','story_framework','auto_render','web_research','deep_read','final_review','auto_repair','export_formats',*DISPLAY_KEYS) if k in data}
+                request={k:data[k] for k in ('brief','script','article','links','duration_mode','seconds','voice','rate','adaptive_base_rate','backend','api_base','model','content_type','story_framework','auto_render','web_research','deep_read','final_review','auto_repair','export_formats',*DISPLAY_KEYS) if k in data}
                 request=duration_settings(request,request)
                 request.pop('_duration_revision',None)  # Initial settings, not an edit to an existing review.
                 from studio_story import normalize_framework
@@ -505,6 +520,11 @@ class Handler(BaseHTTPRequestHandler):
                 request=pv.load_json(job/'request.json') if (job/'request.json').is_file() else {}
                 request=story_settings(request,data)
                 sources=pv.load_json(job/'analysis/sources.json'); engine.validate(data['plan'],sources)
+                from studio_media_index import validate_media_selection
+                index_path=job/'analysis/media_index.json'
+                media_index=pv.load_json(index_path) if index_path.is_file() else {}
+                for block in data['plan']['blocks']:
+                    for shot in block['shots']:validate_media_selection(shot,media_index,sources,job)
                 previous=pv.load_json(job/'analysis/studio_plan.json')
                 request=editorial_settings(request,data,previous)
                 pv.save_json(job/'analysis/studio_plan.json',data['plan'])
@@ -533,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
                     request.update({k:v for k,v in data['display'].items() if k in DISPLAY_KEYS})
                 if 'speech' in data:
                     validate_settings(data['speech'])
-                    request.update({k:v for k,v in data['speech'].items() if k in ('voice','rate')})
+                    request.update({k:v for k,v in data['speech'].items() if k in ('voice','rate','adaptive_base_rate')})
                 pv.save_json(job/'request.json',request)
                 self.server.manager.start(job,'render',data.get('key','').strip()); return self.json({'job_id':job.name})
             if path=='/api/review':

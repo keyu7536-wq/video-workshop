@@ -266,6 +266,44 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
         coverage['originals'].append({'source_id': source_id, 'label': label, 'path': str(path),
                                       'page': source.get('page'), 'actual_bounds': bounds})
     result.extend(video_images)
+    from studio_video_crop import preview_video_crop
+    for block in plan.get('blocks',[]):
+        for shot_index,shot in enumerate(block.get('shots',[])):
+            if shot.get('kind')!='video' or not (shot.get('bbox') or shot.get('media_segment_id') or shot.get('subtitle_safe')):continue
+            source=lookup.get(shot.get('source_id'))
+            if source is None:continue
+            sampled=preview_video_crop(job,source,shot['in'],shot['duration'],shot.get('bbox',[]),request or {},shot.get('subtitle_safe',False))
+            for frame in sampled['frames']:
+                meta={'kind':'video_crop','block_id':block['id'],'shot_index':shot_index,
+                      'source_id':source['id'],'source_time':frame['time'],'bbox':shot.get('bbox',[])}
+                if len(result)>=max_images:
+                    coverage['omitted_compositions'].append(meta|{'reason':'Image budget; selected video composition not inspected.'})
+                    continue
+                path=job/frame['preview'];label=f"{source['id']} · 取片范围内 {frame['time']:.2f} 秒的裁后构图（单帧）"
+                result.append((label,path));coverage['compositions'].append(meta|{'path':str(path),'label':label,
+                    'provenance':sampled['metadata'],'scope':'Actual source frame and planned crop/fit; no encoded caption or continuous-action review.'})
+    # Motion plans need real renderer frames, not only a list of object names.
+    from studio_motion import render_frame as motion_frame
+    from studio_display import dimensions
+    import hashlib
+    width,height=dimensions(request or {})
+    for block in plan.get('blocks',[]):
+        for shot_index,shot in enumerate(block.get('shots',[])):
+            if shot.get('kind')!='motion':continue
+            spec=shot['motion']
+            staged={**spec,'stages':[{**stage,'start':float(i)} for i,stage in enumerate(spec['stages'])]}
+            for stage_index,stage in enumerate(spec['stages']):
+                meta={'kind':'motion','block_id':block['id'],'shot_index':shot_index,'stage_index':stage_index,'cue':stage['cue']}
+                if len(result)>=max_images:
+                    coverage['omitted_compositions'].append(meta|{'reason':'Image budget; motion stage not inspected.'})
+                    continue
+                key=hashlib.sha256(json.dumps([spec,width,height,stage_index],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+                target=folder/f'motion_{key}.png'
+                picture=motion_frame(staged,stage_index+.6,len(spec['stages'])+.5,width,height)
+                picture.thumbnail((1600,1600));picture.save(target)
+                label=f"{block['id']} · 动作示意阶段 {stage_index+1}（静态布局，非实测时间）"
+                result.append((label,target));coverage['compositions'].append(meta|{'path':str(target),'label':label,
+                    'scope':'Renderer stage composition only; synthetic preview time, no measured speech or encoded motion.'})
     # A multi-column derivative must always be accompanied by its original.
     # Reserve these before optional single-region crops and canvas previews.
     for item in sorted(crop_requests.values(),key=lambda item:not bool(item['column_crop'])):

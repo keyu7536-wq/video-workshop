@@ -8,6 +8,10 @@ def render_settings_hash(request):
     from studio_story import normalize_framework,STORY_POLICY_VERSION
     keys=('voice','rate','voice_style','delivery_scope','content_type',*DISPLAY_KEYS)
     settings={k:request.get(k) for k in keys}
+    if request.get('rate')=='auto' and not str(request.get('voice','')).startswith('qwen:'):
+        from studio_voice import normalize_base_rate,ADAPTIVE_PACING_VERSION
+        settings.update(adaptive_base_rate=normalize_base_rate(request.get('adaptive_base_rate')),
+                        adaptive_pacing_version=ADAPTIVE_PACING_VERSION)
     settings.update(story_framework=normalize_framework(request.get('story_framework')),story_policy_version=STORY_POLICY_VERSION)
     if request.get('_brief_revision') is not None:settings['_brief_revision']=request['_brief_revision']
     from studio_duration import effective_duration_settings

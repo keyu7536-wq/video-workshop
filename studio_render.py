@@ -129,7 +129,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         chapter=shot.get('chapter', '')
         # Existing saved plans may contain editorial prompts as chapter prefixes.
         chapter=topic_label(chapter)
-        if not protected and not shot.get('diagram'):add(shot['start'], shot['end'], 'IntroChapter' if immersive and index==0 else 'Chapter', chapter)
+        if not protected and not shot.get('diagram') and not shot.get('motion'):add(shot['start'], shot['end'], 'IntroChapter' if immersive and index==0 else 'Chapter', chapter)
         if not immersive:add(shot['start'], shot['end'], 'Label', shot.get('label', ''))
         if config.get('show_sources',True):add(shot['start'], shot['end'], 'Source', shot.get('source', '')[:70])
     for start, end, text in phrases:
@@ -162,9 +162,9 @@ def render_shot(index, shot, root, work, ffmpeg, fps, width, height, config=None
     frames = round(seconds * fps)
     config=config or {}
     x, y, media_width, media_height = media_geometry(width,height,config,shot.get('protect_content',False))
-    if shot.get('diagram') or shot.get('visual_beats'):x,y,media_width,media_height=0,0,width,height
+    if shot.get('diagram') or shot.get('motion') or shot.get('visual_beats'):x,y,media_width,media_height=0,0,width,height
     media_width-=media_width%2;media_height-=media_height%2
-    cover=config.get('media_fit')=='cover' and not shot.get('protect_content',False) and not shot.get('diagram')
+    cover=config.get('media_fit')=='cover' and not shot.get('protect_content',False) and not shot.get('diagram') and not shot.get('motion')
     args = [ffmpeg, '-hide_banner', '-v', 'error', '-y']
     if shot['kind'] == 'image':
         args += ['-loop', '1', '-framerate', str(fps)]
@@ -173,6 +173,9 @@ def render_shot(index, shot, root, work, ffmpeg, fps, width, height, config=None
     args += ['-i', str(source)]
     fit=(f'scale={media_width}:{media_height}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={media_width}:{media_height}' if cover else f'scale={media_width}:{media_height}:force_original_aspect_ratio=decrease:force_divisible_by=2')
     vf = f'setpts=PTS-STARTPTS,{fit},pad={width}:{height}:{x}+({media_width}-iw)/2:{y}+({media_height}-ih)/2:color=0x080e15,setsar=1,fps={fps}'
+    if shot.get('video_crop'):
+        from studio_video_crop import video_crop_filter
+        vf=video_crop_filter(shot['video_crop'])+','+vf
     # Insufficient video spans are resolved before encoding; never freeze footage.
     if shot['kind'] == 'image' and shot.get('focus'):
         from PIL import Image
@@ -242,13 +245,17 @@ class NeedsMoreVisualsError(ValueError):
         super().__init__('需补镜头：演示素材或切点无法覆盖实际讲解，请增加相关镜头或重新分镜：'+labels+detail)
 
 
-def replace_video_holds(shots, root, work, fps, minimal_text=False):
-    """Cover excess speech with an already selected same-block static visual.
+def replace_video_holds(shots, root, work, fps, minimal_text=False, strict_video_continuity=False):
+    """Require explicit coverage, or retain legacy same-block still fallback.
 
     Keep all original cue boundaries and complete source ranges. Generated
     diagrams have their own measured duration; they are never replayed or frozen
     as substitute footage. ``minimal_text`` remains accepted for caller
-    compatibility; neither mode invents an explanation card.
+    compatibility; neither mode invents an explanation card. Workbench projects
+    enable ``strict_video_continuity``: a selected still in the same paragraph
+    does not establish that it matches speech still referring to the video.
+    Report the measured gap so the planner can explicitly revise source ranges
+    or shot boundaries; do not silently donate a different visual.
     """
     result, adjustments, issues = [], [], []
     for global_index,shot in enumerate(shots):
@@ -260,17 +267,26 @@ def replace_video_holds(shots, root, work, fps, minimal_text=False):
         end = shot.get('end',start + shot['render_duration'])
         missing = shot['render_duration'] - available
         block_id = shot.get('block_id')
-        candidates = [(index,other) for index,other in enumerate(shots)
-                      if block_id is not None and other.get('block_id') == block_id
-                      and other['kind'] == 'image' and other.get('file')
-                      and not other.get('visual_beats') and not other.get('visual_timeline')
-                      and (Path(root) / other['file']).is_file()]
         issue = {'block_id':block_id,'shot_index':shot.get('shot_index',global_index),
                  'chapter':shot.get('chapter',''),'file':shot.get('file',''),
                  'time_basis':'video',
                  'start':start,'end':end,'available_seconds':available,
                  'required_seconds':shot['render_duration'],'missing_seconds':round(missing,6),
                  'cue':shot.get('cue','')}
+        if strict_video_continuity:
+            issue['reason'] = ('generated_diagram_duration_mismatch' if shot.get('diagram')
+                               else 'selected_video_shorter_than_narration_window')
+            issue['source_in'] = shot.get('in',0)
+            issue['source_end'] = shot.get('in',0) + available
+            issue['continuation_requires_explicit_plan'] = True
+            issues.append(issue)
+            result.append(shot)
+            continue
+        candidates = [(index,other) for index,other in enumerate(shots)
+                      if block_id is not None and other.get('block_id') == block_id
+                      and other['kind'] == 'image' and other.get('file')
+                      and not other.get('visual_beats') and not other.get('visual_timeline') and not other.get('motion')
+                      and (Path(root) / other['file']).is_file()]
         if not candidates or available <= 0 or shot.get('diagram'):
             issue['reason'] = ('generated_diagram_duration_mismatch' if shot.get('diagram')
                                else 'no_selected_same_block_static_visual')

@@ -34,7 +34,7 @@ def _validate_preserved(engine,before,after,sources,request):
     if [(b.get('id'),b.get('narration')) for b in blocks]!=[(b['id'],b['narration']) for b in before['blocks']]:
         raise _ProtectedTimingError('自动补镜头修改了原文稿，已保留原计划。请在分镜页面补充相关画面后重试。')
     engine.validate(after,sources,request.get('script','').strip())
-    engine.validate_visual_policy(after,request)
+    engine.validate_visual_policy(after,request,sources)
     for original_block,candidate_block in zip(before['blocks'],after['blocks']):
         remaining=[shot for shot in candidate_block['shots'] if shot['kind']=='video']
         for original in original_block['shots']:

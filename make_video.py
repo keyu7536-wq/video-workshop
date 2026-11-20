@@ -363,7 +363,7 @@ async def build(args):
     font = find_font(work, args.font)
     for block in config["blocks"]:
         for shot in block["shots"]:
-            if shot['kind']!='diagram' and not (root / shot["file"]).is_file():
+            if shot['kind'] not in ('diagram','motion') and not (root / shot["file"]).is_file():
                 raise RuntimeError(f"缺少素材：{shot['file']}。请完整解压素材包后运行。")
     fps = int(config.get("fps", 30))
     if fps != 30:
@@ -395,13 +395,18 @@ async def build(args):
             pcm, events, hit, delivery = studio_local_voice.load(local_voice[block['id']],ffmpeg)
         elif rate == 'auto':
             from studio_voice import make_adaptive_voice
-            pcm, events, hit, delivery = await make_adaptive_voice(block["narration"], voice, cache, ffmpeg)
+            pcm, events, hit, delivery = await make_adaptive_voice(block["narration"], voice, cache, ffmpeg,
+                base_rate=config.get('adaptive_base_rate'))
         else:
             pcm, events, hit = await make_voice(block["narration"], voice, rate, cache, ffmpeg)
         hits += int(hit)
         audio_duration = len(pcm) / (RATE_HZ * 2)
         minimum = block.get("min_duration", 0)
-        duration = math.ceil(max(audio_duration + .25, minimum) * fps) / fps
+        video_tail = bool(block.get('shots')) and block['shots'][-1]['kind'] == 'video'
+        # A source clip must cover speech, not optional silence invented by the
+        # renderer. Keep every PCM sample and round up to the next video frame.
+        tail_padding = 0 if studio and config.get('strict_video_continuity',False) and video_tail else .25
+        duration = math.ceil(max(audio_duration + tail_padding, minimum) * fps) / fps
         words = words_with_positions(block["narration"], events)
         if studio:
             try:
@@ -414,6 +419,30 @@ async def build(args):
         for shot in selected:
             shot["start"] = cursor + shot["local_start"]
             shot["end"] = cursor + shot["local_end"]
+            if shot['kind']=='motion':
+                stages=[]
+                for index,stage in enumerate(shot['motion']['stages']):
+                    try:
+                        timestamp=0.0 if index==0 else cue_time(stage['cue'],block['narration'],words)-shot['local_start']
+                    except RuntimeError as exc:
+                        timing_issues.append({'block_id':block['id'],'shot_index':shot['shot_index'],
+                            'reason':'motion_cue_unresolved','time_basis':'block_local','block_start_seconds':cursor,
+                            'stage_index':index,'cue':stage['cue'],'detail':str(exc),
+                            'start':shot['local_start'],'end':shot['local_end'],
+                            'available_cue_window':shot['render_duration'],'missing_seconds':0})
+                        continue
+                    reason=('motion_cue_outside_shot' if not 0<=timestamp<shot['render_duration']
+                            else 'motion_cues_not_increasing' if stages and timestamp<=stages[-1]['start'] else None)
+                    if reason:
+                        timing_issues.append({'block_id':block['id'],'shot_index':shot['shot_index'],
+                            'reason':reason,'time_basis':'block_local','block_start_seconds':cursor,
+                            'stage_index':index,'cue':stage['cue'],'stage_local_time':timestamp,
+                            'expected_cue_time':timestamp+shot['local_start'],
+                            'start':shot['local_start'],'end':shot['local_end'],
+                            'available_cue_window':shot['render_duration'],
+                            'missing_seconds':round(max(0,-timestamp,timestamp-shot['render_duration']+1/fps),6)})
+                    stages.append({**stage,'start':timestamp})
+                shot['motion_timeline']=stages
             if shot['kind']=='diagram':
                 graph=dict(shot['diagram']);stages=[]
                 for index,stage in enumerate(graph['stages']):
@@ -472,7 +501,8 @@ async def build(args):
     if studio:
         import studio_render
         try:
-            shots, hold_replacements = studio_render.replace_video_holds(shots, root, work, fps, config.get('minimal_text',False))
+            shots, hold_replacements = studio_render.replace_video_holds(shots, root, work, fps,
+                config.get('minimal_text',False), strict_video_continuity=config.get('strict_video_continuity',False))
             timing_adjustments = [shot['timing_adjustment'] for shot in shots if shot.get('timing_adjustment')]
         except studio_render.NeedsMoreVisualsError as exc:
             timing_issues.extend(exc.issues)
@@ -489,7 +519,14 @@ async def build(args):
         # Do not spend time rendering any diagram until every block has passed
         # measured timing and source-coverage validation.
         for rendered_index,shot in enumerate(shots):
-            if shot['kind']=='diagram':
+            if shot['kind']=='motion':
+                from studio_motion import render_motion
+                spec={**shot['motion'],'stages':shot['motion_timeline']}
+                target=(root/shot['file']).resolve();target.parent.mkdir(parents=True,exist_ok=True)
+                render_motion(spec,target,shot['render_duration'],width,height,fps,ffmpeg)
+                shot.update(kind='video',duration=shot['render_duration'])
+                shot['in']=0
+            elif shot['kind']=='diagram':
                 from studio_diagrams import render_diagram
                 graph={**shot['diagram'],'stages':shot['diagram_timeline']}
                 target=(root/shot['file']).resolve();target.parent.mkdir(parents=True,exist_ok=True)
@@ -538,9 +575,13 @@ async def build(args):
               "narration_blocks": len(config["blocks"]), "audio_cache_hits": hits, "shots": len(shots),
               "subtitle_phrases": len(phrases), "elapsed_seconds": round(time.time()-started, 2),
               "subtitles_only_rerender": args.subtitles_only,
-              "timing": ("Qwen forced alignment of actual audio" if local_voice is not None else "TTS WordBoundary timestamps") + ("; studio video plays at original speed; measured gaps use selected same-block static visuals." if studio else "; image/video duration follows recorded audio; legacy video may hold its last frame."),
+              "timing": ("Qwen forced alignment of actual audio" if local_voice is not None else "TTS WordBoundary timestamps") + ("; studio video plays at original speed; insufficient source spans require explicit replanning." if studio and config.get('strict_video_continuity') else "; studio video plays at original speed; measured gaps use selected same-block static visuals." if studio else "; image/video duration follows recorded audio; legacy video may hold its last frame."),
               "scope": config.get("plan_origin", "Uses the supplied, previously reviewed script and source ranges. Does not automatically understand new papers or select new footage."),
               "blocks": reports}
+    if rate=='auto' and local_voice is None:
+        from studio_voice import normalize_base_rate,ADAPTIVE_PACING_VERSION
+        report.update(adaptive_base_rate=normalize_base_rate(config.get('adaptive_base_rate')),
+                      adaptive_pacing_version=ADAPTIVE_PACING_VERSION)
     (output / "run_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (output / "rendered_shots.json").write_text(json.dumps(shots, ensure_ascii=False, indent=2), encoding="utf-8")
     log("[4/4] 已完成：" + str(destination))

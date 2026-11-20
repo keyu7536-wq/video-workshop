@@ -16,13 +16,14 @@ def review_frames(job):
     for shot in shots:
         start,end=shot['start'],shot['end']
         times.append((round((start+end)/2,3),shot.get('label','')))
-        timeline=shot.get('diagram_timeline',[]) or shot.get('visual_timeline',[])
+        timeline=shot.get('diagram_timeline',[]) or shot.get('visual_timeline',[]) or shot.get('motion_timeline',[])
         for index,stage in enumerate(timeline):
             stage_start=start+stage['start']
             stage_end=min(end,start+timeline[index+1]['start']) if index+1<len(timeline) else end
             # Wait for the short reveal transition when possible, but never
             # sample a later stage on behalf of a short earlier one.
-            moment=stage_start+(min(.35,(stage_end-stage_start)*.75) if shot.get('visual_timeline')
+            moment=stage_start+(min(.5,(stage_end-stage_start)*.75) if shot.get('motion_timeline')
+                                else min(.35,(stage_end-stage_start)*.75) if shot.get('visual_timeline')
                                 else min(.2,(stage_end-stage_start)/2))
             if stage_start<=moment<stage_end:
                 prefix='动态图阶段：' if shot.get('diagram_timeline') else '画面阶段：'
@@ -106,6 +107,9 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     context='\n抽帧顺序与时间：'+json.dumps(frames,ensure_ascii=False)+'\n计划：'+json.dumps(plan,ensure_ascii=False)+'\n实际时间报告：'+json.dumps(report,ensure_ascii=False)
     context+='\n审核版本：'+json.dumps({'video_sha256':video_hash,'plan_hash':plan_hash(plan)},ensure_ascii=False)
     context+='\n完整镜头时间线：'+json.dumps(pv.load_json(job/'output/rendered_shots.json'),ensure_ascii=False)
+    from studio_media_index import media_index_context
+    index_path=job/'analysis/media_index.json'
+    if index_path.is_file():context+='\n源视频采样与候选记录（不代表连续动作审核）：'+media_index_context(pv.load_json(index_path))
     context+='\n实际抽帧覆盖范围（不得声称看过 omitted_shot_indices 中的镜头）：'+json.dumps(sampling_coverage,ensure_ascii=False)
     context+='\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),**effective_duration_settings(request)},ensure_ascii=False)
     context+='\n视觉设置：'+json.dumps(visual_settings,ensure_ascii=False)
@@ -140,6 +144,25 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
                 else 'not inspected; review unavailable or skipped; encoded frames prepared only'),
             frames=len(frames) if inspected else 0,prepared_frames=len(frames))
         pv.save_json(job/f'output/review_{round_number}_{name}.json',result);results.append(result)
+    if plan.get('story') is not None:
+        from studio_storyboard import check_understanding
+        if unavailable_reason is None:
+            try:
+                understood=check_understanding(job,plan,request,ai,
+                    frames=[Path(frame['path']) for frame in frames],
+                    timeline=pv.load_json(job/'output/rendered_shots.json'),
+                    suffix=f'_final_{round_number}_understanding')
+                understood.update(ready=not any(i['severity']=='error' for i in understood['issues']),
+                                  summary=understood['answer_from_video'])
+            except Exception as exc:
+                unavailable_reason=redact(f'{type(exc).__name__}: {exc}',secrets)
+                understood={'status':'unavailable','ready':False,'issues':[],
+                            'summary':'理解检查未完成：'+unavailable_reason}
+        else:
+            understood={'status':'skipped','ready':False,'issues':[], 'summary':'前一审核维度未完成，理解检查待重试。'}
+        understood.update(stage='understanding',round=round_number,**versions)
+        pv.save_json(job/f'output/review_{round_number}_understanding.json',understood)
+        results.append(understood)
     if (file_hash(video)!=video_hash or file_hash(job/'project.json')!=versions['project_sha256']
             or file_hash(job/'output/rendered_shots.json')!=versions['timeline_sha256']):
         raise RuntimeError('成片或渲染项目在审核期间发生变化，请针对当前版本重新审核。')

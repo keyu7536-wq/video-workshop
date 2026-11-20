@@ -32,6 +32,8 @@ REQUIRED = (
     'studio_chart_composition.py', 'studio_repair_budget.py', 'studio_repair_checkpoint.py', 'studio_final_repair.py',
     'studio_director.py', 'studio_visual_beats.py', 'studio_visual_quality.py', 'studio_visual_preview.py',
     'studio/director.js',
+    'studio_storyboard.py','studio_media_index.py','studio_motion.py','studio_video_crop.py',
+    'studio/storyline.js','studio/motion.js','studio/video-crop.js',
     'studio/index.html', 'studio/app.js', 'studio/display.js', 'studio/preview.js', 'studio/style.css', 'studio/voice-audition.html',
     'skills/paper-video-director/SKILL.md',
     'skills/paper-video-director/agents/openai.yaml',
@@ -58,6 +60,12 @@ REQUIRED = (
     'tests/test_chart_composition.py', 'tests/test_chart_pipeline.py', 'tests/test_repair_budget.py', 'tests/test_repair_checkpoint.py', 'tests/test_final_repair.py',
     'tests/test_director.py', 'tests/test_director_ui.py', 'tests/test_visual_beats.py', 'tests/test_visual_beats_pipeline.py',
     'tests/test_visual_quality.py', 'tests/test_visual_quality_integration.py', 'tests/test_visual_beats_review.py',
+    'tests/test_storyboard.py','tests/test_media_index.py','tests/test_media_index_integration.py',
+    'tests/test_motion.py','tests/test_motion_pipeline.py','tests/test_motion_ui.py',
+    'tests/test_storyline_ui.py','tests/test_adaptive_pacing.py','tests/test_video_crop.py',
+    'tests/test_story_media_pipeline.py',
+    'tests/test_video_crop_ui.py','tests/test_adaptive_pacing_integration.py',
+    'tests/test_motion_states.py','tests/test_video_continuity.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',
@@ -156,7 +164,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=ROOT)
     parser.add_argument('--output',type=Path,default=ROOT/'dist')
-    parser.add_argument('--version',default='0.3.5')
+    parser.add_argument('--version',default='0.5.0')
     parser.add_argument('--check',action='store_true')
     args=parser.parse_args();root=args.root.resolve()
     if args.check:

@@ -76,12 +76,13 @@ def repair_final_video(job,request,plan,sources,final):
                 prompt=engine.prompt_for(sources,images,request)
                 prompt+='\n对以下当前候选做最小修正，解决上一轮具体错误。保留用户文案与正确事实；不能删去关键解释、图例或比较条件来换取通过。'
                 prompt+='若之前候选被拒，必须处理其明确问题；不能交回完全相同的计划要求重新抽签审核。'
+                prompt+='审核反馈中的解决建议不是新增素材或渲染能力的授权。先核对实际schema、来源和能画出的形状；不得用写着名称的图标冒充具体外观差异。非受保护的自动文案若添加了素材不能展示的假设情节，可在保留来源事实、中心问题和必要解释的前提下改成可展示的例子，不能只换标签继续承诺看见不存在的细节。用户script仍逐字保护，素材不足就保留明确缺口。'
                 prompt+='\n当前候选：'+json.dumps(working,ensure_ascii=False)+'\n上一轮反馈：'+json.dumps(feedback,ensure_ascii=False)
                 suffix='_render_repair' if ticket['number']==1 else f"_render_repair_{ticket['number']}"
                 candidate=engine.call_ai(prompt,[Path(item[1]) for item in images],analysis,request,engine.SCHEMA,suffix)
                 phase='validation'
                 engine.validate(candidate,sources,request.get('script','').strip())
-                engine.validate_visual_policy(candidate,request);validated=True
+                engine.validate_visual_policy(candidate,request,sources,job);validated=True
                 digest=engine.plan_hash(candidate)
                 if digest==engine.plan_hash(working) or digest in rejected_reviews:
                     reason='修订候选与已拒绝版本完全相同，尚未处理上一轮问题。'

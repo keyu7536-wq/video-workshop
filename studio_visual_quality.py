@@ -25,6 +25,8 @@ def _identifier(value):
 
 
 def _kind(shot):
+    if shot.get('kind')=='motion' or (shot.get('kind')=='video' and shot.get('motion')):
+        return 'motion'
     if shot.get('kind') == 'diagram' or (shot.get('kind') == 'video' and shot.get('diagram')):
         return 'diagram'
     if shot.get('visual_beats') or shot.get('visual_timeline') or shot.get('visual_beat_timeline'):
@@ -34,7 +36,7 @@ def _kind(shot):
 
 
 def _counts(shots):
-    counts = {kind: 0 for kind in ('page', 'image', 'video', 'card', 'diagram', 'staged_image', 'unknown')}
+    counts = {kind: 0 for kind in ('page', 'image', 'video', 'card', 'diagram', 'motion', 'staged_image', 'unknown')}
     for shot in shots:
         counts[_kind(shot)] += 1
     return counts

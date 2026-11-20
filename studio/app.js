@@ -16,8 +16,8 @@ function reviewNeedsChanges(review){return Boolean(review&&(review.ready===false
 function currentPlanBlocked(job=state.job){return Boolean(job?.plan&&job.status!=='failed'&&reviewNeedsChanges(job.review)&&!job.review.stale&&!(job===state.job&&(state.dirty||displaySettingsChanged()||durationSettingsChanged())));}
 function repairBudgetExhausted(){const budget=state.job?.repair_budget;return Boolean(budget&&!budget.stale&&budget.remaining===0&&!budget.pending_review);}
 function jobStatusLabel(job){return job.status==='review_needed'&&job.stage==='plan_review'?'分镜待修改':({completed:'已生成',review_needed:'待复核草稿',prepared:'分镜已准备',failed:'需要处理',processing:'制作中',created:'新任务',cancelled:'已停止'})[job.status]||job.status;}
-let config = {backend:'codex', api_base:'https://api.openai.com/v1', model:'gpt-4.1', rate:'+50%', key:''};
-try { const saved=JSON.parse(localStorage.getItem('video-workshop-settings') || '{}'); for (const key of ['backend','api_base','model','rate']) if(saved[key]) config[key]=saved[key]; } catch (_) {}
+let config = {backend:'codex', api_base:'https://api.openai.com/v1', model:'gpt-4.1', rate:'+50%', adaptive_base_rate:'+40%', key:''};
+try { const saved=JSON.parse(localStorage.getItem('video-workshop-settings') || '{}'); for (const key of ['backend','api_base','model','rate','adaptive_base_rate']) if(saved[key]) config[key]=saved[key]; } catch (_) {}
 
 async function api(path, options={}) {
   const response=await fetch(path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers}});
@@ -44,6 +44,7 @@ $('article').addEventListener('input',updateStoryHint);
 function syncSpeechControls(){
   const local=$('voice').value.startsWith('qwen:');
   for(const id of ['rate','speechRate']){$(id).value=config.rate;$(id).disabled=local;}
+  if($('adaptiveBaseRate')){$('adaptiveBaseRate').value=config.adaptive_base_rate||'+40%';$('adaptiveBaseWrap').hidden=local||config.rate!=='auto';}
   $('speechRateHint').textContent=local?'本地 Qwen 使用独立配音设置，不使用百分比语速。切回 Edge 后恢复所选语速。':'修改语速后需重新生成，已有视频的声音不变。';
 }
 function persistSettings(){const {key,...publicSettings}=config;localStorage.setItem('video-workshop-settings',JSON.stringify({...publicSettings,workflow_version:1}));}
@@ -51,11 +52,13 @@ function restoreSpeechSettings(request={}){
   let saved={};try{saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}')||{};}catch(_){}
   $('voice').value=request.voice??appDefaults.default_voice;
   config.rate=request.rate??saved.rate??appDefaults.default_rate;
+  config.adaptive_base_rate=request.adaptive_base_rate??saved.adaptive_base_rate??'+40%';
 }
 function settingsToForm() { $('backend').value=config.backend;$('apiBase').value=config.api_base;$('model').value=config.model;$('apiKey').value=config.key;syncSpeechControls();$('apiFields').hidden=config.backend!=='api'; }
-function settingsFromForm() { return {backend:$('backend').value,api_base:$('apiBase').value.trim(),model:$('model').value.trim(),key:$('apiKey').value.trim(),rate:$('rate').value}; }
+function settingsFromForm() { return {backend:$('backend').value,api_base:$('apiBase').value.trim(),model:$('model').value.trim(),key:$('apiKey').value.trim(),rate:$('rate').value,adaptive_base_rate:config.adaptive_base_rate||'+40%'}; }
 function backendLabel() { $('backendLabel').textContent=config.backend==='api'?`API · ${config.model}`:'Codex CLI'; }
 function modelSettings(){return {backend:config.backend,api_base:config.api_base,model:config.model,key:config.key};}
+function speechSettings(){return {voice:$('voice').value,rate:config.rate,...(config.rate==='auto'&&!$('voice').value.startsWith('qwen:')?{adaptive_base_rate:config.adaptive_base_rate}: {})};}
 $('openSettings').onclick=()=>{settingsToForm();$('settingsDialog').showModal();};
 $('backend').onchange=()=>{$('apiFields').hidden=$('backend').value!=='api';};
 $('settingsForm').onsubmit=event=>{event.preventDefault();config=settingsFromForm();persistSettings();settingsToForm();backendLabel();renderOutput();$('settingsDialog').close();toast('设置已更新，后续制作会自动调用所选 AI。');};
@@ -94,7 +97,7 @@ function renderJobs(){
 async function refreshJobs() { try { const result=await api('/api/jobs');listedJobs=result.jobs;renderJobs(); } catch(error){toast(error.message);} }
 $('jobSearch')?.addEventListener('input',renderJobs);
 $('refreshJobs').onclick=refreshJobs;
-$('newProject').onclick=()=>{if(state.active)return toast('请等待当前制作完成，或先停止任务。');state.job=null;state.dirty=false;restoreInputs();$('contentType').value='auto';$('storyFramework').value='auto';updateStoryHint();$('voice').value=appDefaults.default_voice;const saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}');config.rate=saved.rate||appDefaults.default_rate;settingsToForm();displayToForm({layout_style:'immersive',show_sources:false,show_disclosure:false,minimal_text:true});renderUploads();$('projectName').textContent='新的视频';$('taskStatus').hidden=true;$('researchPanel').innerHTML='';$('reviewBanner').innerHTML='';$('storyboard').innerHTML='';$('finalReviewPanel').innerHTML='';$('downloadLinks').innerHTML='';$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').hidden=true;$('videoEmpty').hidden=false;setPlaybackAudioJob(null);renderMeasuredSegments(false);updateControls();tab('create');refreshJobs();};
+$('newProject').onclick=()=>{if(state.active)return toast('请等待当前制作完成，或先停止任务。');state.job=null;state.dirty=false;restoreInputs();$('contentType').value='auto';$('storyFramework').value='auto';updateStoryHint();$('voice').value=appDefaults.default_voice;const saved=JSON.parse(localStorage.getItem('video-workshop-settings')||'{}');config.rate=saved.rate||appDefaults.default_rate;config.adaptive_base_rate=saved.adaptive_base_rate||'+40%';settingsToForm();displayToForm({layout_style:'immersive',show_sources:false,show_disclosure:false,minimal_text:true});renderUploads();$('projectName').textContent='新的视频';$('taskStatus').hidden=true;$('researchPanel').innerHTML='';$('reviewBanner').innerHTML='';$('storyboard').innerHTML='';$('finalReviewPanel').innerHTML='';$('downloadLinks').innerHTML='';$('videoPlayer').pause();$('videoPlayer').removeAttribute('src');$('videoPlayer').hidden=true;$('videoEmpty').hidden=false;setPlaybackAudioJob(null);renderMeasuredSegments(false);updateControls();tab('create');refreshJobs();};
 
 function updateControls() { const editable=Boolean(state.job?.plan),blocked=currentPlanBlocked(),recovery=blocked?null:state.job?.recovery;$('retryJob').hidden=!recovery;$('retryJob').disabled=state.active;$('retryJob').textContent=recovery?.label||'继续制作';$('retryReview').hidden=recovery?.action!=='review';$('retryReview').disabled=state.active;$('regenerateDisplay').hidden=!editable;$('regenerateDisplay').disabled=state.active||blocked;$('createButton').disabled=state.active;$('quickCreate').disabled=state.active;$('savePlan').disabled=!editable||state.active;$('renderButton').disabled=!editable||state.active||blocked;$('renderButton').title=blocked?'请先修改下方指出的问题，或选择自动修正并生成。':'';$('replan').disabled=!editable||state.active;$('editInputs').hidden=!state.job;$('editInputs').disabled=state.active;$('exportButton').disabled=blocked||state.dirty||state.active||!(state.job?.can_export??['completed','review_needed'].includes(state.job?.status));if($('repairPlanButton'))$('repairPlanButton').disabled=state.active||repairBudgetExhausted(); }
 $('quickCreate').onclick=()=>$('createButton').click();
@@ -161,6 +164,7 @@ function renderEditor() {
   $('editorBriefWrap').hidden=!plan;$('editorBrief').value=job?.request?.brief||'';
   const failure=job?.status==='failed'?(job.error||'本次生成未完成，请查看制作日志。'):'';
   renderPlanReview();
+  renderStoryline();
   if(!plan){$('editorSummary').textContent=failure?'文稿与分镜尚未生成，请根据下方具体错误处理。':job?.legacy_plan?'这是旧版任务，可在“预览与导出”播放；新建任务后支持可视化编辑。':'先添加资料，AI 会生成文稿与分镜。';$('storyboard').innerHTML='';return;}
   const characters=plan.blocks.reduce((n,block)=>n+block.narration.length,0);
   $('editorSummary').textContent=`${plan.blocks.length} 段 · ${characters} 字`;
@@ -169,6 +173,7 @@ function renderEditor() {
   $('storyboard').querySelectorAll('[data-chapter]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.chapter)].chapter=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
   $('storyboard').querySelectorAll('[data-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.shot.split(',').map(Number)));
   renderDirectorFields();
+  renderStoryline();
 }
 async function savePlan() {
   if(!state.job?.plan)throw Error('请先生成文稿与分镜。');
@@ -181,7 +186,7 @@ async function savePlan() {
   state.dirty=false;renderEditor();renderOutput();updateControls();
 }
 $('savePlan').onclick=async()=>{try{await savePlan();toast('文稿与镜头修改已保存。');}catch(error){toast(error.message);}};
-$('renderButton').onclick=async()=>{try{validateDisplayForm();await requireDisplayServer();await savePlan();await api('/api/render',{method:'POST',body:JSON.stringify({job_id:state.job.id,...modelSettings(),content_type:$('contentType').value,story_framework:$('storyFramework').value,...durationSettings(),display:displaySettings(),final_review:$('finalReview').checked,auto_repair:$('autoRepair').checked,speech:{voice:$('voice').value,rate:config.rate}})});state.active=true;state.job.status='processing';renderOutput();updateControls();$('taskStatus').hidden=false;tab('output');poll();}catch(error){toast(error.message);}};
+$('renderButton').onclick=async()=>{try{validateDisplayForm();await requireDisplayServer();await savePlan();await api('/api/render',{method:'POST',body:JSON.stringify({job_id:state.job.id,...modelSettings(),content_type:$('contentType').value,story_framework:$('storyFramework').value,...durationSettings(),display:displaySettings(),final_review:$('finalReview').checked,auto_repair:$('autoRepair').checked,speech:speechSettings()})});state.active=true;state.job.status='processing';renderOutput();updateControls();$('taskStatus').hidden=false;tab('output');poll();}catch(error){toast(error.message);}};
 $('replan').textContent='按文稿新建分镜';
 $('reviewBanner').insertAdjacentHTML('beforebegin','<details id="editorBriefWrap" class="panel" hidden><summary>修改创作要求</summary><label for="editorBrief">受众、重点和画面要求</label><textarea id="editorBrief" rows="4" maxlength="20000"></textarea><p class="small muted">保存后按新要求重新复核；已生成的视频保留，重新生成后才能对应本次修改。</p></details>');
 $('editorBrief').oninput=()=>{if(state.job){state.job.request={...(state.job.request||{}),brief:$('editorBrief').value};state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);}};
@@ -198,7 +203,7 @@ $('replan').onclick=async()=>{
     const {files=[],...original}=state.job.request||{};
     const body={...original,...modelSettings(),script,uploads:[],from_job:state.job.id,
       reuse_files:files.map((_,index)=>index),auto_render:false,
-      content_type:$('contentType').value,story_framework:$('storyFramework').value,...durationSettings(),voice:$('voice').value,rate:config.rate,...displaySettings()};
+      content_type:$('contentType').value,story_framework:$('storyFramework').value,...durationSettings(),...speechSettings(),...displaySettings()};
     state.active=true;updateControls();await requireDisplayServer();
     const result=await api('/api/create',{method:'POST',body:JSON.stringify(body)});
     state.job={id:result.job_id};state.dirty=false;state.uploads=[];state.reuseFiles=[];
@@ -212,18 +217,18 @@ $('retryJob').onclick=async()=>{try{const action=state.job?.recovery?.action;if(
 $('retryReview').onclick=()=>$('retryJob').onclick();
 
 $('outputMeta').insertAdjacentHTML('afterend','<p id="outputSpeechSettings" class="small muted" hidden></p>');
-function speechDescription(voice,rate){
+function speechDescription(voice,rate,base){
   const name=[...$('voice').options].find(option=>option.value===voice)?.textContent||voice||'音色未记录';
-  return name+' · '+(voice?.startsWith('qwen:')?'本地配音配置':rate==='auto'?'自动节奏':rate?'语速 '+rate:'语速未记录');
+  return name+' · '+(voice?.startsWith('qwen:')?'本地配音配置':rate==='auto'?'自动节奏'+(base?' · 基础速度 '+base:''):rate?'语速 '+rate:'语速未记录');
 }
 function renderOutput() {
   const job=state.job;if(!job)return;
   $('outputTitle').textContent=job.plan?.title||job.legacy_plan?.title||job.publishing?.title||'成片预览';
   const report=job.report;
-  $('outputMeta').textContent=report?`已生成：${report.duration_seconds.toFixed(1)} 秒 · ${report.resolution} · ${report.fps} fps · ${report.shots} 个镜头${report.voice?' · '+speechDescription(report.voice,report.rate):''}`:'分镜确认后，自动配音并合成视频。';
-  const sameSpeech=report?.voice===$('voice').value&&(report.voice.startsWith('qwen:')||report.rate===config.rate);
+  $('outputMeta').textContent=report?`已生成：${report.duration_seconds.toFixed(1)} 秒 · ${report.resolution} · ${report.fps} fps · ${report.shots} 个镜头${report.voice?' · '+speechDescription(report.voice,report.rate,report.adaptive_base_rate):''}`:'分镜确认后，自动配音并合成视频。';
+  const sameSpeech=report?.voice===$('voice').value&&(report.voice.startsWith('qwen:')||report.rate===config.rate&&(config.rate!=='auto'||report.adaptive_base_rate===config.adaptive_base_rate));
   $('outputSpeechSettings').hidden=Boolean(sameSpeech);
-  $('outputSpeechSettings').textContent=(report?.voice?'待重新生成：':'下次生成设置：')+speechDescription($('voice').value,config.rate);
+  $('outputSpeechSettings').textContent=(report?.voice?'待重新生成：':'下次生成设置：')+speechDescription($('voice').value,config.rate,config.adaptive_base_rate);
   const available=(job.can_export??['completed','review_needed'].includes(job.status))&&job.video_url;
   renderMeasuredSegments(available);$('videoTag').textContent=available?(job.status==='failed'?'成片已生成 · 导出未完成':job.status==='review_needed'?'待复核草稿':'已生成'):'待生成';$('videoPlayer').hidden=!available;$('videoEmpty').hidden=Boolean(available);
   if(available){if($('videoPlayer').getAttribute('src')!==job.video_url)$('videoPlayer').src=job.video_url;if(job.poster_url)$('videoPlayer').poster=job.poster_url;}
@@ -241,27 +246,38 @@ $('copyPublishing').onclick=async()=>{try{await navigator.clipboard.writeText($(
 function openShot(bi,si) {
   state.shot=[bi,si];const shot=state.job.plan.blocks[bi].shots[si];state.originalBBox=[...shot.bbox];state.crop=shot.focus?.length===4?[...shot.focus]:shot.bbox.length===4?[...shot.bbox]:[0,0,1,1];
   $('shotFocus').checked=Boolean(shot.focus?.length);$('shotKeepFull').checked=Boolean(shot.keep_full);
+  $('videoSubtitleSafe').checked=Boolean(shot.subtitle_safe);
   $('columnCropEnabled').checked=Boolean(shot.column_crop);$('columnCropSpec').value=shot.column_crop?JSON.stringify(shot.column_crop):'';
-  $('shotSource').innerHTML='<option value="card">讲解卡片</option>'+(shot.kind==='diagram'?'<option value="diagram">原理动态图 · 按旁白推进</option>':'')+(state.job.sources||[]).filter(source=>['page','image','video'].includes(source.type)).map(source=>`<option value="${escapeHTML(source.id)}">${escapeHTML(source.name)}${source.page?' · 第'+source.page+'页':''}</option>`).join('');
-  $('shotSource').value=['card','diagram'].includes(shot.kind)?shot.kind:shot.source_id;$('shotIn').value=shot.in;$('shotDuration').value=shot.duration;$('shotLabel').value=shot.label;$('shotCue').value=shot.cue;$('shotCardText').value=shot.card_text;
-  prepareVisualBeatEditor(shot);updateShotSource();updateVisualBeatSource();$('shotDialog').showModal();if(shot.column_crop)updateColumnCropPreview().catch(()=>{});
+  $('shotSource').innerHTML='<option value="card">讲解卡片</option><option value="motion">动作与状态示意</option>'+(shot.kind==='diagram'?'<option value="diagram">原理动态图 · 按旁白推进</option>':'')+(state.job.sources||[]).filter(source=>['page','image','video'].includes(source.type)).map(source=>`<option value="${escapeHTML(source.id)}">${escapeHTML(source.name)}${source.page?' · 第'+source.page+'页':''}</option>`).join('');
+  $('shotSource').value=['card','diagram','motion'].includes(shot.kind)?shot.kind:shot.source_id;$('shotIn').value=shot.in;$('shotDuration').value=shot.duration;$('shotLabel').value=shot.label;$('shotCue').value=shot.cue;$('shotCardText').value=shot.card_text;
+  prepareVisualBeatEditor(shot);openMotionEditor(shot);renderMediaSelection(shot);updateShotSource();updateVisualBeatSource();$('shotDialog').showModal();if(shot.column_crop)updateColumnCropPreview().catch(()=>{});
 }
-function updateShotSource(){const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value);const image=['page','image'].includes(source?.type);$('cropWrap').hidden=!image;$('cropHint').hidden=!image;$('focusControl').hidden=!image;$('keepControl').hidden=source?.type!=='video';$('cropHint').textContent='拖选裁切范围；勾选高亮只加框，保留原裁图。需要去掉多余内容时，先取消勾选高亮，再拖选要保留的区域。';$('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=source?.type!=='video';if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}updateShotPreview();}
+function updateShotSource(){
+  const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value),image=['page','image'].includes(source?.type),video=source?.type==='video';
+  $('cropWrap').hidden=!(image||video);$('cropHint').hidden=!(image||video);$('focusControl').hidden=!image;$('keepControl').hidden=!video;
+  $('cropHint').textContent=video?'在原片抽帧上拖选要保留的区域，再查看裁后画面。注意保留说明当前对象和条件所需的内容。':'拖选裁切范围；勾选高亮只加框，保留原裁图。需要去掉多余内容时，先取消勾选高亮，再拖选要保留的区域。';
+  $('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=!video;
+  if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}
+  showVideoCropControls(video);updateShotPreview();
+}
 $('shotSource').onchange=()=>{state.crop=[0,0,1,1];$('columnCropEnabled').checked=false;$('columnCropSpec').value='';updateShotSource();updateVisualBeatSource(true);};
 function drawCrop(){const [x0,y0,x1,y1]=state.crop;$('cropBox').style.cssText=`left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%;`;}
 let cropStart=null;
 function cropPoint(event){const box=$('cropImage').getBoundingClientRect();return [Math.max(0,Math.min(1,(event.clientX-box.left)/box.width)),Math.max(0,Math.min(1,(event.clientY-box.top)/box.height))];}
 $('cropWrap').onpointerdown=event=>{if($('columnCropEnabled').checked)return;event.preventDefault();cropStart=cropPoint(event);$('cropWrap').setPointerCapture(event.pointerId);};
 $('cropWrap').onpointermove=event=>{if(!cropStart)return;const point=cropPoint(event);state.crop=[Math.min(cropStart[0],point[0]),Math.min(cropStart[1],point[1]),Math.max(cropStart[0],point[0]),Math.max(cropStart[1],point[1])];drawCrop();};
-$('cropWrap').onpointerup=()=>{cropStart=null;};
+$('cropWrap').onpointerup=()=>{cropStart=null;invalidateVideoCropPreview();};
 $('shotForm').onsubmit=async event=>{
   event.preventDefault();
   let columnCrop=null;
   let visualBeats=[];
-  try{visualBeats=readVisualBeats();}catch(error){toast(error.message);return;}
+  let motion=null,mediaSelection;
+  try{visualBeats=readVisualBeats();motion=readMotionEditor();mediaSelection=readMediaSelection($('shotSource').value,Number($('shotIn').value),Number($('shotDuration').value));}catch(error){toast(error.message);return;}
   if($('columnCropEnabled').checked){try{columnCrop=await updateColumnCropPreview();if(!columnCrop)return;}catch(error){toast(error.message);return;}}
   const [bi,si]=state.shot,shot=state.job.plan.blocks[bi].shots[si],source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value),focus=!columnCrop&&$('shotFocus').checked&&['page','image'].includes(source?.type);
-  Object.assign(shot,{kind:$('shotSource').value==='diagram'?'diagram':source?.type||'card',source_id:source?.id||'',in:Number($('shotIn').value)||0,duration:Number($('shotDuration').value),bbox:columnCrop?[]:['page','image'].includes(source?.type)?(focus?(state.originalBBox.length===4?state.originalBBox:source.type==='page'?[0,0,1,1]:[]):[...state.crop]):[],column_crop:columnCrop,focus:focus?[...state.crop]:[],keep_full:source?.type==='video'&&$('shotKeepFull').checked,label:$('shotLabel').value,card_text:$('shotCardText').value,cue:$('shotCue').value});
+  Object.assign(shot,{kind:['diagram','motion'].includes($('shotSource').value)?$('shotSource').value:source?.type||'card',source_id:source?.id||'',in:Number($('shotIn').value)||0,duration:Number($('shotDuration').value),bbox:columnCrop?[]:['page','image','video'].includes(source?.type)?(focus?(state.originalBBox.length===4?state.originalBBox:source.type==='page'?[0,0,1,1]:[]):[...state.crop]):[],column_crop:columnCrop,focus:focus?[...state.crop]:[],keep_full:source?.type==='video'&&$('shotKeepFull').checked,label:$('shotLabel').value,card_text:$('shotCardText').value,cue:$('shotCue').value});
+  shot.motion=motion;Object.assign(shot,mediaSelection);
+  shot.subtitle_safe=source?.type==='video'&&$('videoSubtitleSafe').checked;
   shot.visual_beats=visualBeats;
   if(shot.kind!=='diagram')shot.diagram=null;
   if(visualBeats.length){shot.bbox=[...visualBeatCrop];shot.focus=[];}
@@ -328,4 +344,9 @@ async function initialize(){
 }
 initializeShotPreviews();
 initializeDirectorEditor();
+initializeStorylineEditor();
+initializeMotionEditor();
+initializeVideoCropEditor();
+$('speechRateHint').insertAdjacentHTML('afterend','<label id="adaptiveBaseWrap" hidden>自动节奏的基础速度<select id="adaptiveBaseRate"><option value="+25%">较舒缓 · +25%</option><option value="+40%" selected>流畅 · +40%</option><option value="+50%">快速 · +50%</option></select><span class="small muted">整段保持同一音色，仅在数字和术语处略微放慢。</span></label>');
+$('adaptiveBaseRate').onchange=()=>{config.adaptive_base_rate=$('adaptiveBaseRate').value;persistSettings();renderOutput();};
 initialize();

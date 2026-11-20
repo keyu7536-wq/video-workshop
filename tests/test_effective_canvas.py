@@ -63,7 +63,7 @@ class EffectiveCanvasTests(unittest.TestCase):
         actual=visual_settings(ai.call_args.args[0])
         self.assertEqual((actual['width'],actual['height']),(1080,1920))
         # v6 adds editable explanation plans and actual detail-stage previews.
-        self.assertEqual(result['_plan_review_context_version'],6)
+        self.assertEqual(result['_plan_review_context_version'],7)
         self.assertEqual(result['_effective_display_settings'],actual)
         self.assertEqual(request,original)
 

@@ -113,7 +113,7 @@ class ResearchTests(unittest.TestCase):
 
 class VoiceTests(unittest.TestCase):
     def test_adaptive_delivery_preserves_original_text(self):
-        text='机器人为什么会摔倒？成功率是91%。现在再看一次动作。'
+        text='机器人为什么会摔倒？\n成功率是91%。\n现在再看一次动作。'
         parts=delivery_segments(text)
         self.assertEqual(''.join(p['text'] for p in parts),text)
         self.assertLess(int(parts[1]['rate'].strip('%')),int(parts[2]['rate'].strip('%')))
@@ -122,7 +122,7 @@ class VoiceTests(unittest.TestCase):
             from make_video import RATE_HZ
             return b'\0'*(RATE_HZ*2),[{'type':'WordBoundary','offset':1000000,'duration':5000000,'text':args[0]}],True
         with patch('make_video.make_voice',side_effect=fake_voice):
-            pcm,events,hit,timing=asyncio.run(make_adaptive_voice('第一句。第二句。','voice',Path('.'),'ffmpeg'))
+            pcm,events,hit,timing=asyncio.run(make_adaptive_voice('第一句。\n第二句。','voice',Path('.'),'ffmpeg'))
         self.assertGreater(events[1]['offset'],10000000)
         self.assertAlmostEqual(events[1]['offset']/1e7,timing[1]['start']+.1)
         self.assertTrue(hit)

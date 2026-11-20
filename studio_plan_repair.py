@@ -140,6 +140,9 @@ def repair_fingerprint(plan, sources, request, *, include_policy=True):
     keys=('brief','script','article','seconds','content_type','delivery_scope',
           'voice','rate','voice_style','backend','api_base','model',*DISPLAY_KEYS)
     settings={key:request.get(key) for key in keys}
+    if request.get('rate')=='auto' and not str(request.get('voice','')).startswith('qwen:'):
+        from studio_voice import normalize_base_rate
+        settings['adaptive_base_rate']=normalize_base_rate(request.get('adaptive_base_rate'))
     from studio_duration import effective_duration_settings
     if effective_duration_settings(request)['duration_mode']=='adaptive':
         settings.pop('seconds',None)
@@ -239,6 +242,7 @@ def repair_plan_once(job, plan, sources, request, review):
                 prompt=engine.prompt_for(sources,images,request)
                 prompt+='\n本次只对以下具体问题做最小修复。保留已正确的事实、主线和相关镜头；不能通过删去关键解释或事实限定来换取通过。'
                 prompt+='根据实际来源修正错误文稿或不对应的镜头，无法核实时保留缺口，不得编造实验。若用户给定script，逐字及顺序保护仍最高优先，只能修分段和镜头，不能改稿。'
+                prompt+='反馈中的画面建议须回到现有素材和渲染能力判断，不能把建议当成已存在的图片。非受保护的自动文案可把无法展示的自拟情节改为来源支持、画面能说明的具体例子，仍保留中心问题和必要解释。'
                 prompt+='\n原始计划：'+json.dumps(plan,ensure_ascii=False)+'\n上一轮候选：'+json.dumps(current,ensure_ascii=False)
                 prompt+='\n本轮需要处理的具体反馈：'+json.dumps(feedback,ensure_ascii=False)
                 candidate=engine.call_ai(prompt,[Path(path) for _,path in images],analysis,request,
@@ -246,7 +250,7 @@ def repair_plan_once(job, plan, sources, request, review):
                 ticket=finish_attempt(job,ticket,'generated',candidate=candidate,candidate_validated=False)
             phase='validation'
             engine.validate(candidate,sources,request.get('script','').strip())
-            engine.validate_visual_policy(candidate,request)
+            engine.validate_visual_policy(candidate,request,sources,job)
             ticket=finish_attempt(job,ticket,'validated',candidate=candidate,candidate_validated=True)
             candidate_hash=engine.plan_hash(candidate)
             if candidate_hash in reviewed and not _accepted(reviewed[candidate_hash]):
