@@ -32,8 +32,28 @@ function visualQualityHTML(){
   const report=state.job?.visual_quality;
   if(!report||state.dirty)return '';
   const issues=report.issues||[];
-  if(!issues.length)return '';
-  return `<details class="notice warning"><summary>画面安排 · ${issues.length} 条建议</summary><p class="small">根据素材和镜头时间整理，供选片参考；不代表已完成内容或听音审核。</p><ul class="review-issues">${issues.map(issue=>`<li>${escapeHTML(issue.reason)}</li>`).join('')}</ul></details>`;
+  const stats=report.statistics||{},coverage=report.coverage||{},metrics=[];
+  const videos=coverage.available_videos,used=coverage.used_videos;
+  if(videos?.source_id_count){
+    let text=`视频登记 ${videos.source_id_count} 个来源`;
+    if(videos.independent_count!==null&&videos.independent_count!==undefined){
+      text+=`，按文件哈希为 ${videos.independent_count} 份`;
+      if(used?.independent_count!==null&&used?.independent_count!==undefined)text+=`，已选 ${used.independent_count} 份`;
+    }else text+=`；哈希已确认 ${videos.known_hash_count||0} 份，另有 ${(videos.unhashed_source_ids||[]).length} 个来源未去重，独立总数未知`;
+    metrics.push(text+'。哈希来自采集记录或显式核对，本页不重新读取文件。');
+  }
+  if(stats.measured_shot_count){
+    const mediaSeconds=stats.measured_seconds_by_kind?.video;
+    const longest=stats.longest_measured_explanation_seconds;
+    let text=`${stats.timing_status==='complete'?'当前时间线':'已记录部分'}画面共 ${Number(stats.measured_shot_seconds).toFixed(1)} 秒`;
+    if(Number.isFinite(mediaSeconds))text+=`，素材视频 ${mediaSeconds.toFixed(1)} 秒`;
+    if(Number.isFinite(longest)&&longest>0)text+=`，连续机制示意最长 ${longest.toFixed(1)} 秒`;
+    metrics.push(text+'。');
+  }else if(stats.longest_planned_explanation_shots){
+    metrics.push(`计划连续机制示意最多 ${stats.longest_planned_explanation_shots} 镜；计划长度仅为权重，实际时长由配音后确定。`);
+  }
+  if(!issues.length&&!metrics.length)return '';
+  return `<details class="notice${issues.length?' warning':''}"><summary>画面安排 · ${issues.length?`${issues.length} 条建议`:'素材与节奏'}</summary>${metrics.map(text=>`<p class="small">${escapeHTML(text)}</p>`).join('')}<p class="small">这些统计供选片和复查参考，不代表已观看内容或听音；教程和全动画无需满足视频比例。</p>${issues.length?`<ul class="review-issues">${issues.map(issue=>`<li>${escapeHTML(issue.reason)}</li>`).join('')}</ul>`:''}</details>`;
 }
 
 function prepareVisualBeatEditor(shot){

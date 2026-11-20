@@ -9,6 +9,13 @@ from urllib.parse import urljoin, urlparse, urlunparse
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp'}
 VIDEO_SUFFIXES = {'.mp4', '.webm', '.mov', '.m4v'}
 MAX_DISCOVERED = 1600
+SUPPLEMENT_LABEL = re.compile(r'\bsupplement(?:ary|al)?\b|\bappendix\b|\b(?:more|additional|all)\s+(?:videos|demos)\b|补充材料|附录', re.I)
+CITATION_LABEL = re.compile(r'^(?:references?|related\s+work|参考文献)(?=$|[\s:：/·(\[（])', re.I)
+
+
+def document_hint(url, mime=''):
+    return (PurePosixPath(urlparse(url).path).suffix.lower() == '.pdf'
+            or (mime or '').lower().split(';', 1)[0].strip() == 'application/pdf')
 
 
 def web_url(value, base):
@@ -28,7 +35,7 @@ def web_url(value, base):
 
 
 def kind_hint(url, mime=''):
-    mime = mime.lower().split(';', 1)[0].strip()
+    mime = (mime or '').lower().split(';', 1)[0].strip()
     suffix = PurePosixPath(urlparse(url).path).suffix.lower()
     if mime.startswith('video/') or suffix in VIDEO_SUFFIXES:
         return 'video'
@@ -74,6 +81,31 @@ class MediaHTML(HTMLParser):
                                  'discovery_kind': origin, 'label': label.strip()[:240],
                                  'context': self.heading[:400], 'embedded_page': embedded})
 
+    def add_document(self, value, label='', origin='html_link', mime=''):
+        """Register explicit documents/pages; fetching and hop budgets stay upstream."""
+        url = web_url(value, self.url)
+        if not url:
+            return False
+        pdf = document_hint(url, mime)
+        supplement = bool(SUPPLEMENT_LABEL.search(label) or
+                          re.search(r'(?:^|[/_.-])(?:appendix|supplement(?:ary|al)?)(?:[/_.-]|$)', urlparse(url).path, re.I))
+        citation = bool(CITATION_LABEL.search(label.strip()) or CITATION_LABEL.search(self.heading.strip()))
+        if not pdf and not supplement:
+            return False
+        if any(item['url'].split('#', 1)[0] == url.split('#', 1)[0] for item in self.linked_pages):
+            return True
+        if len(self.linked_pages) >= MAX_DISCOVERED:
+            self.omitted += 1
+            return True
+        self.linked_pages.append({
+            'url': url, 'kind': 'supplement_document' if pdf else 'supplement_page',
+            'label': label.strip()[:240], 'discovery_kind': origin,
+            'context': self.heading[:400],
+            'document_role': 'citation' if citation else 'supplement' if supplement else 'paper' if re.search(r'\bpaper\b|论文', label, re.I) else 'unspecified',
+            'explicit_author_link': True,
+        })
+        return True
+
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if re.fullmatch(r'h[1-6]', tag):
@@ -110,6 +142,9 @@ class MediaHTML(HTMLParser):
         if tag in ('iframe', 'embed'):
             url = web_url(attrs.get('src') or attrs.get('data-src'), self.url)
             if url:
+                if document_hint(url, attrs.get('type', '')):
+                    self.add_document(url, label, 'html_' + tag, attrs.get('type', ''))
+                    return
                 hint = kind_hint(url, attrs.get('type', ''))
                 if hint:
                     self.add_media(url, hint, 'html_' + tag, label)
@@ -134,16 +169,14 @@ class MediaHTML(HTMLParser):
             url, attrs = link['url'], link['attrs']
             label = ' '.join(''.join(link['text']).split())[:240]
             hint = kind_hint(url, attrs.get('type', ''))
-            if hint or github_attachment(url) or 'download' in attrs:
-                if urlparse(url).path.lower().endswith('.pdf') or attrs.get('type') == 'application/pdf':
-                    self.linked_pages.append({'url': url, 'kind': 'supplement_document', 'label': label})
-                else:
-                    self.add_media(url, hint, 'html_link', label)
+            if document_hint(url, attrs.get('type', '')):
+                self.add_document(url, label, 'html_link', attrs.get('type', ''))
+            elif hint or github_attachment(url) or 'download' in attrs:
+                self.add_media(url, hint, 'html_link', label)
             elif hosted_player(url):
                 self.add_media(url, '', 'author_player_link', label, embedded=True)
-            elif re.search(r'\bsupplement(?:ary|al)?\b|\bappendix\b|\b(?:more|additional|all)\s+(?:videos|demos)\b|补充材料|附录', label, re.I):
-                kind = 'supplement_document' if urlparse(url).path.lower().endswith('.pdf') else 'supplement_page'
-                self.linked_pages.append({'url': url, 'kind': kind, 'label': label})
+            else:
+                self.add_document(url, label)
 
 
 def readme_media(text, raw_url):
@@ -159,10 +192,14 @@ def readme_media(text, raw_url):
         if not url:
             return
         hint = kind_hint(url)
-        if is_image or hint or github_attachment(url):
+        if document_hint(url):
+            page.add_document(url, label, 'readme_markdown')
+        elif is_image or hint or github_attachment(url):
             page.add_media(url, 'image' if is_image and not hint else hint, 'readme_markdown', label)
         elif hosted_player(url):
             page.add_media(url, '', 'readme_player_link', label, embedded=True)
+        else:
+            page.add_document(url, label, 'readme_markdown')
 
     for match in re.finditer(r'(!?)\[([^\]\n]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))[^\n)]*\)', text):
         add(match[3] or match[4], match[2], bool(match[1]))

@@ -296,11 +296,14 @@ $('cancelTask').onclick=async()=>{try{await api('/api/cancel',{method:'POST',bod
 
 
 function renderResearch(){
-  const job=state.job,d=job?.research;if(!d){$('researchPanel').innerHTML='';return;}
+  const job=state.job,d=job?.research;if(!job){$('researchPanel').innerHTML='';return;}
   const labels={problem:'问题',prior_work:'已有方法',mechanism:'核心机制',results:'实验依据',limits:'局限',implementation:'项目实现'};
   const coverage=job.research_manifest?.media_coverage;
-  const coverageHTML=coverage?`<p><b>素材盘点：</b>发现 ${coverage.discovered} 个链接，下载／抽帧 ${coverage.sampled} 项，另有 ${coverage.not_reviewed} 项未逐项查看（包含重复画幅、编码、封面或预算限制）。<a href="/files/${encodeURIComponent(job.id)}/${escapeHTML(coverage.inventory||'analysis/research/media_inventory.json')}" target="_blank">查看逐项记录</a></p>`:'';
-  $('researchPanel').innerHTML=`<details class="panel research-notes"><summary>研究笔记 · ${escapeHTML(d.title)} · ${d.claims.length} 条有原文依据的解读</summary><p>${escapeHTML(d.project_identity)}</p>${coverageHTML}<p><b>故事切入：</b>${escapeHTML(d.story_angle)}</p>${d.claims.map(c=>`<p><b>${labels[c.topic]}：</b>${escapeHTML(c.explanation)}<small>依据：${escapeHTML(c.quote)}</small></p>`).join('')}<p><b>资料缺口：</b>${escapeHTML([...d.missing_information,...(job.research_manifest?.gaps||[])].join('；')||'未报告')}</p><a href="/files/${encodeURIComponent(job.id)}/research.md" download>下载完整笔记</a></details>`;
+  const records=job.media_inventory?.records||[];
+  const statusNames={downloaded_and_sampled:'已获取并抽帧',duplicate:'重复素材，已合并',unavailable:'未获取',failed:'下载失败',inspection_failed:'无法读取画面',not_reviewed:'未获取',excluded:'未采用',discovered:'已发现链接'};
+  const count=value=>Number.isFinite(Number(value))?Math.max(0,Number(value)):0;
+  const coverageHTML=coverage?`<section class="panel research-notes"><h3>素材获取</h3><p>发现 ${count(coverage.discovered)} 个链接 · 新获取 ${count(coverage.sampled)} 项 · 合并重复 ${count(coverage.duplicates)} 项 · 获取失败 ${count(coverage.unavailable)} 项 · 未尝试 ${count(coverage.not_reviewed)} 项</p><p>${coverage.independent_videos!=null?`可用视频 ${count(coverage.independent_videos)} 份（按文件内容去重）`:'旧任务未核对素材是否重复'}；抽帧只代表已查看部分画面。</p><details><summary>查看各项获取结果</summary>${records.map(r=>`<p><b>${escapeHTML(statusNames[r.status]||r.status)}：</b>${escapeHTML(r.label||r.url)}${r.reason?`<small>${escapeHTML(r.reason)}</small>`:''}</p>`).join('')}<a href="/files/${encodeURIComponent(job.id)}/analysis/research/media_inventory.json" target="_blank">完整记录</a></details>${(coverage.unavailable||coverage.not_reviewed)?'<p class="small muted">未获取的视频还不能用于剪辑。可将原片加入资料后重新准备文稿与分镜。</p>':''}</section>`:'';
+  $('researchPanel').innerHTML=coverageHTML+(d?`<details class="panel research-notes"><summary>研究笔记 · ${escapeHTML(d.title)} · ${d.claims.length} 条有原文依据的解读</summary><p>${escapeHTML(d.project_identity)}</p><p><b>故事切入：</b>${escapeHTML(d.story_angle)}</p>${d.claims.map(c=>`<p><b>${escapeHTML(labels[c.topic]||c.topic)}：</b>${escapeHTML(c.explanation)}<small>依据：${escapeHTML(c.quote)}</small></p>`).join('')}<p><b>资料缺口：</b>${escapeHTML([...d.missing_information,...(job.research_manifest?.gaps||[])].join('；')||'未报告')}</p><a href="/files/${encodeURIComponent(job.id)}/research.md" download>下载完整笔记</a></details>`:'');
 }
 function renderFinalReview(){
   const r=state.job?.final_review;

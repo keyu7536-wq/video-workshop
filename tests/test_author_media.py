@@ -108,11 +108,12 @@ class AuthorMediaTests(unittest.TestCase):
             reader=self.reader(folder);page=research.Page('https://author.example/')
             page.feed('<iframe src="https://www.youtube-nocookie.com/embed/abc"></iframe><a href="https://vimeo.com/123">Talk</a>')
             reader.ingest_media(page,page.url)
-            with patch.object(reader,'read') as read:
+            with patch.object(reader,'read') as read, patch('studio_hosted_media.download_hosted_media',
+                    return_value={'status':'unavailable','reason':'平台限制，未下载','budget_charge_bytes':0}):
                 reader.linked_media(page,page.url);reader.download_media([],[])
             read.assert_not_called()
             self.assertEqual(len(reader.media_inventory),2)
-            self.assertTrue(all(r['status']=='not_reviewed' for r in reader.media_inventory))
+            self.assertTrue(all(r['status'] in ('not_reviewed','unavailable') for r in reader.media_inventory))
             self.assertIn('未下载',reader.media_inventory[0]['reason'])
             reader.save();saved=json.loads((reader.folder/'media_inventory.json').read_text(encoding='utf-8'))
             self.assertTrue(saved['linked_pages'])

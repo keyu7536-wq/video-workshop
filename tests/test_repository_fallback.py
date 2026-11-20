@@ -60,7 +60,8 @@ class RepositoryFallbackTests(unittest.TestCase):
             raise AssertionError('Unexpected request '+url)
         with tempfile.TemporaryDirectory() as folder:
             reader=reader_fixture(folder)
-            with patch.object(research,'fetch',side_effect=fetch):
+            with patch.object(research,'fetch',side_effect=fetch), patch(
+                    'studio_repository.load_selective_snapshot',side_effect=ValueError('Selective fixture unavailable')):
                 reader.repo('https://github.com/author/project')
             self.assertEqual(len(calls),3)
             meta=json.loads((reader.folder/'repo_author_project.json').read_text(encoding='utf-8'))
@@ -165,7 +166,8 @@ class RepositoryFallbackTests(unittest.TestCase):
                         'text/html' if 'codeload' not in url else 'application/zip')
             with self.subTest(stage=stage),tempfile.TemporaryDirectory() as folder:
                 reader=reader_fixture(folder)
-                with patch.object(research,'fetch',side_effect=fetch):
+                with patch.object(research,'fetch',side_effect=fetch), patch(
+                        'studio_repository.load_selective_snapshot',side_effect=ValueError('Selective fixture unavailable')):
                     reader.repo('https://github.com/author/project')
                 meta=json.loads((reader.folder/'repo_author_project.json').read_text(encoding='utf-8'))
                 self.assertEqual(meta['commit'],COMMIT)

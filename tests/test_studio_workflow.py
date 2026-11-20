@@ -48,7 +48,7 @@ class ResearchTests(unittest.TestCase):
             job=Path(folder);(job/'analysis').mkdir();(job/'assets').mkdir();r=research.Research(job,{},None)
             r.media=[(f'https://example.org/{i}.mp4','https://example.org') for i in range(18)]
             sources=[];images=[]
-            with patch.object(r,'read',side_effect=lambda url,*args:(b'media',url,'video/mp4')),patch('paper_video.inspect_video',return_value=({'duration_seconds':5},[])):
+            with patch.object(r,'read',side_effect=lambda url,*args:(b'media '+url.encode(),url,'video/mp4')),patch('paper_video.inspect_video',return_value=({'duration_seconds':5},[])):
                 r.download_media(images,sources)
             self.assertEqual(len(sources),16)
             self.assertEqual(sum(i['status']=='not_reviewed' for i in r.media_inventory),2)

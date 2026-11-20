@@ -249,7 +249,11 @@ class Research:
             url=link['url'];key=document_url_key(url)
             if key==document_url_key(parent) or key in self.seen_media_pages:continue
             entry={'url':url,'parent_url':parent,'discovery_kind':link['kind'],'status':'not_read'}
+            entry.update({key:link[key] for key in ('document_role','label','context') if link.get(key)})
             self.linked_media_pages.append(entry)
+            if link.get('document_role')=='citation':
+                entry['reason']='明确标注为参考文献或相关工作，仅保留发现记录；未作为作者正文或补充材料读取'
+                continue
             if hosted_player(url):
                 entry['reason']='外部嵌入播放器，仅记录来源；未下载、未抽帧或审阅'
                 self.gaps.append(entry['reason']+'：'+url);continue
@@ -290,53 +294,61 @@ class Research:
             self.gaps.append('仓库读取数量达到本次上限，未读：'+url);return
         self.seen_repos.add(base)
         def archive_fallback(endpoint):
-            from studio_repository import explicit_api_rate_limit,load_public_snapshot
+            from studio_repository import explicit_api_rate_limit,load_public_snapshot,load_selective_snapshot
             reason=explicit_api_rate_limit(self.gaps,endpoint)
             if not reason:return False
             try:
-                snapshot=load_public_snapshot(owner,repo,self.read)
+                try:
+                    snapshot=load_selective_snapshot(owner,repo,self.read)
+                except Exception as exc:
+                    self.gaps.append(f'逐文件仓库读取未完成，尝试有界归档：{type(exc).__name__}: {str(exc)[:160]}')
+                    snapshot=load_public_snapshot(owner,repo,self.read)
                 meta=snapshot.metadata
                 meta.update(fallback_reason=reason,selected_paths=[])
                 entries=snapshot.paths
                 shortlist=[p for p in entries if Path(p).suffix.lower() in
                            ('.py','.md','.yaml','.yml','.json','.toml','.cpp','.h','.rst')][:1500]
-                selected=self.ai('选择最多6个有助于理解当前主题实际实现、使用/评测入口和配置的源码文件。只选清单内路径；来源是同一固定commit的公开仓库归档，不执行任何源码。不要选依赖锁或庞大数据。\n'+json.dumps(shortlist),
+                selected=self.ai('选择最多6个有助于理解当前主题实际实现、使用/评测入口和配置的源码文件。只选清单内路径；来源是同一固定commit的公开仓库，不执行任何源码。不要选依赖锁或庞大数据。\n'+json.dumps(shortlist),
                                  [],self.job/'analysis',self.request,SELECTION,'_repo_files')
                 essential=[p for p in entries if '/' not in p and
                            (p.lower().startswith('readme') or p.lower().startswith('license'))][:3]
                 paths=list(dict.fromkeys(essential+[p for p in selected['paths'] if p in shortlist]))[:9]
                 meta['selected_paths']=paths
-                self.add_text(meta['archive_url'],'Repository: '+meta['url']+
-                    '\nCommit: '+meta['commit']+'\nArchive SHA256: '+meta['archive_sha256']+
-                    '\nPaper revision match: '+meta['paper_version_match']+
+                repository_url=meta.get('archive_url') or meta['url']+'/tree/'+meta['commit']
+                self.add_text(repository_url,'Repository: '+meta['url']+
+                    '\nCommit: '+meta['commit']+'\nTransport: '+meta.get('transport','bounded archive')+
+                    '\nPaper revision match: '+meta.get('paper_version_match','not verified')+
+                    '\nDirectory scope: '+json.dumps({k:meta[k] for k in ('directory_scope','directory_truncated','omitted_directories') if k in meta},ensure_ascii=False)+
                     '\nDirectory paths (bounded listing):\n'+'\n'.join(entries),'repository_tree')
                 read_paths=[]
                 for path in paths:
                     try:text=snapshot.read_text(path)
                     except Exception as exc:
-                        self.gaps.append(f'归档源码未读取 {path}: {type(exc).__name__}: {str(exc)[:160]}')
+                        self.gaps.append(f'源码未读取 {path}: {type(exc).__name__}: {str(exc)[:160]}')
                         continue
                     file_url=snapshot.source_url(path)
-                    self.records.append({'url':file_url,'kind':'repository_archive_file',
+                    self.records.append({'url':file_url,'kind':'repository_archive_file' if meta.get('archive_url') else 'repository_file',
                         'accessed_at':datetime.now(timezone.utc).isoformat(),
-                        'archive_url':meta['archive_url'],'archive_sha256':meta['archive_sha256'],
+                        **{k:meta[k] for k in ('archive_url','archive_sha256','transport') if k in meta},
                         'commit':meta['commit'],'path':path,**snapshot.read_records[path],
                         'reuse':'unknown; verify license before republication'})
                     start=len(self.sources)
                     self.add_text(file_url,'Repository source file: '+path+'\n\n'+text,'repository_file')
                     for source in self.sources[start:]:
-                        source.update(repository_commit=meta['commit'],archive_url=meta['archive_url'],
-                                      archive_sha256=meta['archive_sha256'])
+                        source.update(repository_commit=meta['commit'],
+                            **{k:meta[k] for k in ('archive_url','archive_sha256','transport') if k in meta})
                     read_paths.append(path)
                     if Path(path).name.lower().startswith('readme'):
                         raw=f'https://raw.githubusercontent.com/{owner}/{repo}/{meta["commit"]}/{quote(path)}'
                         media_page=readme_media(text,raw)
                         self.ingest_media(media_page,file_url);self.linked_media(media_page,raw)
                 meta['read_paths']=read_paths
+                if meta.get('directory_truncated'):
+                    self.gaps.append('仓库目录只读取了有界范围，未读目录见仓库记录：'+url)
                 pv.save_json(self.folder/f'repo_{owner}_{repo}.json',meta)
                 for index,gap in enumerate(self.gaps):
                     if gap==reason:
-                        self.gaps[index]=gap+'；已改读公开仓库的固定commit归档，实际读取范围见仓库记录。'
+                        self.gaps[index]=gap+'；已改读公开仓库的固定commit，实际读取范围见仓库记录。'
                 return True
             except Exception as exc:
                 self.gaps.append(f'公开仓库归档备用读取未完成 {url}: {type(exc).__name__}: {str(exc)[:250]}')
@@ -501,7 +513,11 @@ class Research:
         else:self.gaps.append('此项目页面未找到可读取的代码仓库链接：'+final)
     def download_media(self,images,sources):
         from make_video import ffmpeg_path
+        from studio_media_catalog import content_index, merge_origin, coverage_summary
+        from studio_hosted_media import normalize_hosted_url, download_hosted_media
         from PIL import Image
+        import time
+        identities=content_index(sources)
         count_image=0;count_video=sum(s['type']=='video' for s in sources)
         candidates=list({url:(url,parent) for url,parent in self.media}.values())
         self.media_inventory=[{'url':url,'parent_url':parent,**self.media_details.get(url,{}),
@@ -511,7 +527,11 @@ class Research:
         for url,parent in candidates:
             record=records[url];suffix=Path(urlparse(url).path).suffix.lower()
             if record.get('embedded_page') or hosted_player(url):
-                record.update(status='not_reviewed',reason='嵌入播放页面不是直接媒体文件；仅盘点来源，未下载/抽帧/审阅')
+                try: normalized=normalize_hosted_url(url)
+                except (ValueError,TypeError): normalized=None
+                if normalized:
+                    record.update(hosted=normalized,media_type_hint='video');eligible.append((url,parent))
+                else:record.update(status='not_reviewed',reason='不支持此播放链接，未下载；可上传原视频作为素材')
             elif suffix in ('.svg','.gif','.avif','.pdf','.zip') or not (kind_hint(url) or record.get('media_type_hint') or github_attachment(url)):
                 record.update(status='not_reviewed',reason='不支持或未明确声明的直接媒体格式')
             else:eligible.append((url,parent))
@@ -526,20 +546,69 @@ class Research:
                 if url not in wanted:records[url].update(status='not_reviewed',reason='未入本轮下载选择；可能为画幅/编码/海报重复，不能视为已看过')
             candidates=[p for p in candidates if p[0] in wanted]
             pv.save_json(self.folder/'media_selection.json',selection)
-        self.media_remaining_bytes=MEDIA_TOTAL_BYTES;resolved_sources={}
+        self.media_remaining_bytes=MEDIA_TOTAL_BYTES;resolved_sources={};attempted_hosted={}
+        hosted_attempts=0;hosted_elapsed=0.0
+        def preserve_origin(identifier,record,parent):
+            canonical=next((s for s in sources if s['id']==identifier),None)
+            if canonical is not None:
+                merge_origin(canonical,{'url':record.get('resolved_url',record['url']),
+                    'requested_url':record['url'],'parent_url':parent,'provenance':'author_linked_candidate',
+                    'reuse':'未核实转载许可','media_context':{k:record[k] for k in ('label','context','discovery_kind','discovered_from') if record.get(k)}})
         for source in sources:
             if source.get('url') and source['type'] in ('image','video'):
                 resolved_sources[document_url_key(source['url'])]=source['id']
         for url,parent in candidates:
             record=records[url];hint=record.get('media_type_hint') or kind_hint(url)
+            hosted=record.get('hosted');hosted_key=hosted.get('url') if hosted else None
+            if hosted_key in attempted_hosted:
+                original=attempted_hosted[hosted_key]
+                record.update(status='duplicate' if original.get('source_id') else 'not_reviewed',
+                    canonical_url=hosted_key,reason='同一平台视频的另一种链接，实际获取结果见原记录')
+                if original.get('source_id'):
+                    record['source_id']=original['source_id'];preserve_origin(original['source_id'],record,parent)
+                continue
+            known_source=resolved_sources.get(document_url_key(url)) or (resolved_sources.get(hosted_key) if hosted_key else None)
+            if known_source:
+                preserve_origin(known_source,record,parent)
+                record.update(status='duplicate',source_id=known_source,reason='该来源已入库');continue
             if (hint=='video' and count_video>=16) or (hint=='image' and count_image>=12) or len(images)>=IMAGE_BUDGET or self.media_remaining_bytes<=0:
                 records[url].update(status='not_reviewed',reason='本轮下载/抽帧预算已用完');continue
-            if document_url_key(url) in resolved_sources:
-                record.update(status='duplicate',source_id=resolved_sources[document_url_key(url)],reason='该来源已入库');continue
             before=self.media_remaining_bytes
             limit=min(12*1024**2 if hint=='image' else 120*1024**2,before)
             self._media_read_accounting=None
-            response=self.read(url,'author_media',limit)
+            temporary=None
+            if hosted:
+                if hosted_attempts>=4 or hosted_elapsed>=120:
+                    record.update(status='not_reviewed',reason='本轮平台视频获取预算已用完；可上传原视频');continue
+                attempted_hosted[hosted_key]=record;hosted_attempts+=1
+                temporary=self.job/'assets'/('hosted_'+hashlib.sha256(hosted_key.encode()).hexdigest()[:16]+'.mp4')
+                started=time.monotonic()
+                try:
+                    result=download_hosted_media(url,temporary,max_bytes=limit,
+                        timeout=max(1,min(60,120-hosted_elapsed)),max_duration=900,max_height=720)
+                except Exception as exc:
+                    result={'status':'failed','reason':f'平台读取未完成：{type(exc).__name__}: {str(exc)[:160]}',
+                            'budget_charge_bytes':limit}
+                hosted_elapsed+=time.monotonic()-started
+                charge=min(before,max(0,int(result.get('budget_charge_bytes',limit))))
+                self.media_remaining_bytes=max(0,before-charge)
+                self._media_read_accounting='bounded platform download; includes metadata and failed transfers'
+                record['hosted_result']={k:v for k,v in result.items() if k!='file'}
+                actual=Path(result['file']) if result.get('file') else None
+                response=None
+                reason=result.get('reason','平台未返回可用文件')
+                try:
+                    if result.get('status')=='downloaded' and actual and actual.resolve()==temporary.resolve() and actual.is_file() and actual.stat().st_size<=limit:
+                        response=(actual.read_bytes(),hosted_key,'video/mp4')
+                except OSError as exc:reason=f'下载文件无法读取：{exc}'
+                finally:
+                    try:temporary.unlink(missing_ok=True)
+                    except OSError as exc:self.gaps.append(f'临时素材未清理：{temporary.name}: {exc}')
+                    temporary=None
+                if response is None:
+                    record.update(status='unavailable',reason=reason)
+                    self.gaps.append(f'平台视频未获取 {url}: {reason}')
+            else:response=self.read(url,'author_media',limit)
             # An alternate/test reader may not expose transfer measurements.
             # Conservatively charge a failed request's allowance, never zero.
             fallback_accounting=self._media_read_accounting is None
@@ -547,14 +616,22 @@ class Research:
                 self.media_remaining_bytes=max(0,before-(len(response[0]) if response else limit))
             record['budget_charge_bytes']=before-self.media_remaining_bytes
             record['budget_accounting']=self._media_read_accounting or ('conservative allowance for unmetered failure' if not response else 'returned response body bytes')
-            if not response:records[url].update(status='failed',reason='下载失败，详情见gaps');continue
+            if not response:
+                if not hosted:record.update(status='failed',reason='下载失败，详情见gaps')
+                continue
             data,final,mime=response
             record.update(resolved_url=final,mime=mime,bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
-            if document_url_key(final) in resolved_sources:
-                record.update(status='duplicate',source_id=resolved_sources[document_url_key(final)],reason='重定向到已经入库的素材');continue
             try:
                 if len(data)>limit:raise ValueError('响应超过剩余媒体读取预算')
                 media_type,suffix=response_format(final,mime,data,hint);video=media_type=='video'
+                canonical=identities.get((media_type,record['sha256']))
+                if canonical:
+                    merge_origin(canonical,{'url':final,'requested_url':url,'parent_url':parent,
+                        'provenance':'author_linked_candidate','reuse':'未核实转载许可',
+                        'media_context':{key:record[key] for key in ('label','context','discovery_kind') if record.get(key)}})
+                    record.update(status='duplicate',source_id=canonical['id'],reason='文件字节完全相同，沿用已有素材与抽帧',content_sha256=record['sha256'])
+                    resolved_sources[document_url_key(final)]=canonical['id'];resolved_sources[document_url_key(url)]=canonical['id']
+                    continue
                 if (not video and len(data)>12*1024**2) or (video and len(data)>120*1024**2):raise ValueError('响应超过此类媒体的大小上限')
                 if (video and count_video>=16) or (not video and count_image>=12):
                     record.update(status='not_reviewed',reason='响应确认类型后该类媒体数量预算已用完');continue
@@ -573,21 +650,30 @@ class Research:
                         im.verify()
                     source={'id':identifier,'type':'image','file':str(target),'text':''};images.append((identifier,target));count_image+=1
                 source.update(name=Path(urlparse(url).path).name,url=final,parent_url=parent,reuse='未核实转载许可',provenance='author_linked_candidate')
+                source['content_sha256']=record['sha256']
                 source['requested_url']=url
                 source['media_context']={key:record[key] for key in ('label','context','discovery_kind','discovered_from') if record.get(key)}
                 source['display_name']='作者项目演示' if video else '作者项目配图'
                 sources.append(source)
+                identities[(media_type,record['sha256'])]=source
                 resolved_sources[document_url_key(final)]=identifier
                 resolved_sources[document_url_key(url)]=identifier
                 records[url].update(status='downloaded_and_sampled',source_id=identifier,review_scope='已提取抽帧待模型审阅；非逐帧完整审看')
             except Exception as exc:
                 records[url].update(status='inspection_failed',reason=str(exc)[:160]);self.gaps.append(f'未采用素材 {url}: {str(exc)[:160]}')
+            finally:
+                if temporary and temporary.is_file() and temporary.resolve().is_relative_to((self.job/'assets').resolve()):
+                    temporary.unlink()
+        self.media_coverage=coverage_summary(self.media_inventory,sources)
     def save(self):
         pv.save_json(self.folder/'media_inventory.json',{'records':self.media_inventory,'linked_pages':self.linked_media_pages,'scope':'作者项目已发现链接及有限静态脚本解析，不等于全网穷尽检索；嵌入平台链接不等于下载或已审阅视频'})
-        pv.save_json(self.folder/'manifest.json',{'records':self.records,'gaps':self.gaps,'discovery_limit':'4 selected author pages/documents; PDFs <=100 MiB each, 400 total pages/2 million characters, up to 24 previews per document; 65 total model images; 9 selected repo files; up to 4 same-origin scripts read as text; 3 linked supplement/embed pages at depth1; 1600 discovered links, 160 selectable candidates; 12 images; 16 total videos; 512 MiB media bytes; no repo execution','media_coverage':{'discovered':len(self.media_inventory),'sampled':sum(r['status']=='downloaded_and_sampled' for r in self.media_inventory),'not_reviewed':sum(r['status']=='not_reviewed' for r in self.media_inventory)}})
+        from studio_media_catalog import coverage_summary
+        pv.save_json(self.folder/'manifest.json',{'records':self.records,'gaps':self.gaps,'discovery_limit':'4 selected author pages/documents; PDFs <=100 MiB each, 400 total pages/2 million characters, up to 24 previews per document; 65 total model images; 9 selected repo files; up to 4 same-origin scripts read as text; 3 linked supplement/embed pages at depth1; 1600 discovered links, 160 selectable candidates; 12 images; 16 total videos; 512 MiB media bytes; hosted: <=4 attempts/120 seconds, each <=60 seconds/120 MiB/15 minutes/720 lines; no repo execution','media_coverage':getattr(self,'media_coverage',coverage_summary(self.media_inventory,[]))})
 
 
 def enrich(job,request,sources,images,ai):
+    from studio_media_catalog import deduplicate_new_sources
+    deduplicate_new_sources(sources,images)
     research=Research(job,request,ai)
     research.existing_documents(sources,images)
     urls=urls_in_sources(sources)+request.get('links',[])
@@ -627,6 +713,7 @@ def dossier(job,request,sources,images,ai,gaps=None):
     from studio_story import story_instruction
     prompt=contract()+'\n先建立来源笔记，暂不写配音稿。内容类型：'+request.get('content_type','auto')+'。只有确为论文时才要求问题、前人工作、方法输入输出、机制、实验范围与局限；普通文章和给定文案按实际主题整理，研究或代码项目不适用时无需编造。每条claim给实际存在的source_id与该来源逐字连续quote，优先20–180字符，保留原文连字符。无依据的内容记missing_information。project_identity记录来源身份与实际阅读范围，visual_strategy匹配已有素材。\n缺失记录：'+json.dumps(gaps or [],ensure_ascii=False)
     prompt+='\n'+story_instruction(request,'dossier')+'\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),'seconds':request.get('seconds',100)},ensure_ascii=False)+'\n相关时可用 claim.topic 分别保存 prior_work（旧方法）、bottleneck（具体瓶颈与原因）、contribution（针对性改进）、mechanism（作用过程）、results（同问题的对照效果），以及 limits。按实际主题选用，不要求每份普通资料都有这些类别，不得凑齐虚构。'
+    prompt+='\n实际素材获取范围：'+json.dumps(request.get('_media_coverage',{}),ensure_ascii=False)+'\n未获取的平台视频只能作为待补资料，不能写成已观看。相同内容的多个来源不是独立证据。'
     lookup={s['id']:s for s in sources}
     def checked(value,schema=DOSSIER):
         from jsonschema import validate,ValidationError

@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 
 APP_ID = 'video-workshop'
-VERSION = '0.5.0'
-PROTOCOL_VERSION = 16
+VERSION = '0.6.0'
+PROTOCOL_VERSION = 17
 ROOT = Path(__file__).resolve().parent
 
 def load_config():

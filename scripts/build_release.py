@@ -30,6 +30,7 @@ REQUIRED = (
     'studio_server.py', 'studio_voice.py', 'studio_story.py', 'studio_documents.py', 'studio_context.py', 'studio_process.py', 'studio_recovery.py',
     'studio_network.py', 'studio_search.py', 'studio_plan_repair.py', 'studio_repository.py', 'studio_review_assets.py', 'studio_media.py',
     'studio_chart_composition.py', 'studio_repair_budget.py', 'studio_repair_checkpoint.py', 'studio_final_repair.py',
+    'studio_hosted_media.py', 'studio_media_catalog.py',
     'studio_director.py', 'studio_visual_beats.py', 'studio_visual_quality.py', 'studio_visual_preview.py',
     'studio/director.js',
     'studio_storyboard.py','studio_media_index.py','studio_motion.py','studio_video_crop.py',
@@ -66,6 +67,10 @@ REQUIRED = (
     'tests/test_story_media_pipeline.py',
     'tests/test_video_crop_ui.py','tests/test_adaptive_pacing_integration.py',
     'tests/test_motion_states.py','tests/test_video_continuity.py',
+    'tests/test_hosted_media.py', 'tests/test_media_catalog.py',
+    'tests/test_media_citations.py',
+    'tests/test_selective_repository.py', 'tests/test_selective_repository_integration.py', 'tests/test_supplement_discovery.py',
+    'tests/test_visual_quality_coverage.py', 'tests/test_visual_quality_ui.py', 'tests/test_media_coverage_ui.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',

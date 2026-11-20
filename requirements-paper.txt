@@ -2,3 +2,4 @@
 PyMuPDF>=1.26,<2
 Pillow>=11,<14
 jsonschema>=4.23,<5
+yt-dlp>=2026.10.26,<2027

@@ -261,6 +261,8 @@ def snapshot(job):
     for filename,key in [('request.json','request'),('review.json','review'),('output/run_report.json','report'),('publishing.json','publishing'),('research.json','research'),('output/final_review.json','final_review'),('output/exports.json','exports'),('analysis/research/manifest.json','research_manifest'),('analysis/media_index.json','media_index')]:
         if (job/filename).is_file(): result[key]=pv.load_json(job/filename)
     sources=None
+    if (job/'analysis/research/media_inventory.json').is_file():
+        result['media_inventory']=pv.load_json(job/'analysis/research/media_inventory.json')
     if (job/'analysis/sources.json').is_file():
         sources=pv.load_json(job/'analysis/sources.json')
         result['sources']=[{k:v for k,v in source.items() if k not in ('text','file','preview')} for source in sources]
