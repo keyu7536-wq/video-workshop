@@ -5,6 +5,7 @@ from http.client import IncompleteRead
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -345,25 +346,50 @@ class HostedWorkerTests(unittest.TestCase):
             self.assertFalse(result['received_bytes_known'])
             self.assertEqual(target.read_bytes(), b'old'); self.assertEqual(list(Path(directory).glob('.hosted-*')), [])
 
+    def assert_locked_cleanup_success(self, directory):
+        target = Path(directory)/'final.mp4'; target.write_bytes(b'old')
+        def process(command, **kwargs):
+            request = json.loads(Path(command[-2]).read_text(encoding='utf-8'))
+            Path(request['staged']).write_bytes(b'new video')
+            Path(command[-1]).write_text(json.dumps({
+                'status': 'downloaded', 'bytes': 9, 'sha256': hashlib.sha256(b'new video').hexdigest(),
+                'received_bytes': 15, 'budget_charge_bytes': 15}), encoding='utf-8')
+            return SimpleNamespace(wait=lambda timeout: None, returncode=0)
+        with patch('subprocess.Popen', side_effect=process), \
+             patch('studio_hosted_media.shutil.rmtree', side_effect=PermissionError('locked')):
+            result = hm.download_hosted_media(URL, target, max_bytes=1000)
+        self.assertEqual(result['status'], 'downloaded')
+        self.assertEqual(result['budget_charge_bytes'], 15)
+        self.assertEqual(target.read_bytes(), b'new video')
+        self.assertIn('PermissionError', result['cleanup_warning'])
+        # Windows CI can expose its temp root through an 8.3 alias, while
+        # production correctly reports the resolved full cleanup path.
+        self.assertTrue(Path(result['cleanup_directory']).resolve().is_relative_to(Path(directory).resolve()))
+        self.assertTrue(Path(result['cleanup_directory']).is_dir())
+
     def test_locked_cleanup_preserves_published_video_and_measured_success(self):
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory)/'final.mp4'; target.write_bytes(b'old')
-            def process(command, **kwargs):
-                request = json.loads(Path(command[-2]).read_text(encoding='utf-8'))
-                Path(request['staged']).write_bytes(b'new video')
-                Path(command[-1]).write_text(json.dumps({
-                    'status': 'downloaded', 'bytes': 9, 'sha256': hashlib.sha256(b'new video').hexdigest(),
-                    'received_bytes': 15, 'budget_charge_bytes': 15}), encoding='utf-8')
-                return SimpleNamespace(wait=lambda timeout: None, returncode=0)
-            with patch('subprocess.Popen', side_effect=process), \
-                 patch('studio_hosted_media.shutil.rmtree', side_effect=PermissionError('locked')):
-                result = hm.download_hosted_media(URL, target, max_bytes=1000)
-            self.assertEqual(result['status'], 'downloaded')
-            self.assertEqual(result['budget_charge_bytes'], 15)
-            self.assertEqual(target.read_bytes(), b'new video')
-            self.assertIn('PermissionError', result['cleanup_warning'])
-            self.assertTrue(Path(result['cleanup_directory']).is_relative_to(Path(directory)))
-            self.assertTrue(Path(result['cleanup_directory']).is_dir())
+            self.assert_locked_cleanup_success(directory)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows 8.3 aliases are platform-specific')
+    def test_locked_cleanup_under_real_windows_short_path_alias(self):
+        import ctypes
+        get_short_path = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short_path.restype = ctypes.c_uint32
+        with tempfile.TemporaryDirectory(prefix='video-workshop-cleanup-long-directory-') as directory:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_short_path(directory, buffer, len(buffer))
+            if not length:
+                self.skipTest(f'8.3 alias unavailable: Windows error {ctypes.get_last_error()}')
+            self.assertLess(length, len(buffer))
+            short_root = Path(buffer.value)
+            canonical_root = Path(directory).resolve()
+            if short_root == canonical_root:
+                self.skipTest('8.3 aliases are disabled on this temporary volume')
+            self.assertEqual(short_root.resolve(), canonical_root)
+            self.assertFalse((canonical_root/'.hosted-probe').is_relative_to(short_root))
+            self.assert_locked_cleanup_success(short_root)
 
     def test_locked_cleanup_preserves_original_start_failure_and_zero_charge(self):
         with tempfile.TemporaryDirectory() as directory:
