@@ -162,7 +162,7 @@ def render_shot(index, shot, root, work, ffmpeg, fps, width, height, config=None
     frames = round(seconds * fps)
     config=config or {}
     x, y, media_width, media_height = media_geometry(width,height,config,shot.get('protect_content',False))
-    if shot.get('diagram'):x,y,media_width,media_height=0,0,width,height
+    if shot.get('diagram') or shot.get('visual_beats'):x,y,media_width,media_height=0,0,width,height
     media_width-=media_width%2;media_height-=media_height%2
     cover=config.get('media_fit')=='cover' and not shot.get('protect_content',False) and not shot.get('diagram')
     args = [ffmpeg, '-hide_banner', '-v', 'error', '-y']
@@ -263,6 +263,7 @@ def replace_video_holds(shots, root, work, fps, minimal_text=False):
         candidates = [(index,other) for index,other in enumerate(shots)
                       if block_id is not None and other.get('block_id') == block_id
                       and other['kind'] == 'image' and other.get('file')
+                      and not other.get('visual_beats') and not other.get('visual_timeline')
                       and (Path(root) / other['file']).is_file()]
         issue = {'block_id':block_id,'shot_index':shot.get('shot_index',global_index),
                  'chapter':shot.get('chapter',''),'file':shot.get('file',''),

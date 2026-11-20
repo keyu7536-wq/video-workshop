@@ -16,15 +16,17 @@ def review_frames(job):
     for shot in shots:
         start,end=shot['start'],shot['end']
         times.append((round((start+end)/2,3),shot.get('label','')))
-        timeline=shot.get('diagram_timeline',[])
+        timeline=shot.get('diagram_timeline',[]) or shot.get('visual_timeline',[])
         for index,stage in enumerate(timeline):
             stage_start=start+stage['start']
             stage_end=min(end,start+timeline[index+1]['start']) if index+1<len(timeline) else end
             # Wait for the short reveal transition when possible, but never
             # sample a later stage on behalf of a short earlier one.
-            moment=stage_start+min(.2,(stage_end-stage_start)/2)
+            moment=stage_start+(min(.35,(stage_end-stage_start)*.75) if shot.get('visual_timeline')
+                                else min(.2,(stage_end-stage_start)/2))
             if stage_start<=moment<stage_end:
-                stages.append((round(moment,3),'动态图阶段：'+(stage.get('cue') or '开始')))
+                prefix='动态图阶段：' if shot.get('diagram_timeline') else '画面阶段：'
+                stages.append((round(moment,3),prefix+(stage.get('cue') or '开始')))
         if shot.get('kind')=='video' and shot.get('keep_full'):
             boundaries.extend([(round(start+.15,3),'动作开始'),(round(max(start,end-.15),3),'动作结束')])
     # Keep every shot midpoint, plus independent encoded first/last frames.
@@ -88,6 +90,7 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     versions={'video_sha256':video_hash,'plan_hash':plan_hash(plan),
         'settings_hash':render_settings_hash(request),'project_sha256':file_hash(job/'project.json'),
         'duration_settings':effective_duration_settings(request)}
+    versions['timeline_sha256']=file_hash(job/'output/rendered_shots.json')
     frames=review_frames(job)
     if not frames:raise RuntimeError('成片抽帧为空，无法进行实际画面审核。')
     for frame in frames:
@@ -107,6 +110,12 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
     context+='\n用户创作要求：'+json.dumps({'brief':request.get('brief',''),**effective_duration_settings(request)},ensure_ascii=False)
     context+='\n视觉设置：'+json.dumps(visual_settings,ensure_ascii=False)
     context+='\n'+duration_instruction(request,'review')
+    from studio_director import director_instruction
+    from studio_visual_quality import visual_quality_report
+    quality=visual_quality_report(plan,sources,pv.load_json(job/'output/rendered_shots.json'))
+    context+='\n'+director_instruction(request,'review')
+    context+='\n结构与实测时间提示（不是质量通过证明，请结合画面与旁白核实）：'+json.dumps(quality,ensure_ascii=False)
+    pv.save_json(job/'output/visual_quality.json',quality)
     for name,focus in [('visual','检查实际编码画面：图表裁切/字号、遮挡、字幕、画面与所述观点对应。给具体秒数。按视觉设置核对少文字要求，page/image中的论文正文和网页截图也属于文字画面。检查所讲动作、对象或比较是否实际可辨，不能把背景铺满、加高亮框或整条拼图横向铺满当成主体已经变大。对于明确违反少文字要求的正文墙，或缩略图条使本镜头关键行为/关系不可辨的情况，给出error并说明时间、block_id、可见内容、实际停留及其与旁白的冲突；不能只写“字号小”的审美warning。单凭静态、超宽或主体面积比例不判错，可读的图表、简短必要引用及只影响次要标签的瑕疵按实际影响判断。'),
                        ('story','按内容类型、受众与实际片长检查主体意思、必要解释、衔接、信息负荷和逐段真实配音时长/静默余量。论文涉及的问题、方法和效果应交代清楚，轻重与顺序可以调整；普通内容按其题材检查。不能声称听过音频，不评价未知发音。')]:
         focus+=' 内容类型：'+request.get('content_type','auto')+'。确为论文时按其实际贡献类型核对身份和相关机制/证据；综述、理论或观察论文不强制要求算法或对照实验。普通文章、给定文案和纯素材讲解按其实际主题与资料核查，不得要求编造研究。'
@@ -131,7 +140,8 @@ def final_review(job,request,plan,sources,ai,schema,round_number=1):
                 else 'not inspected; review unavailable or skipped; encoded frames prepared only'),
             frames=len(frames) if inspected else 0,prepared_frames=len(frames))
         pv.save_json(job/f'output/review_{round_number}_{name}.json',result);results.append(result)
-    if file_hash(video)!=video_hash or file_hash(job/'project.json')!=versions['project_sha256']:
+    if (file_hash(video)!=video_hash or file_hash(job/'project.json')!=versions['project_sha256']
+            or file_hash(job/'output/rendered_shots.json')!=versions['timeline_sha256']):
         raise RuntimeError('成片或渲染项目在审核期间发生变化，请针对当前版本重新审核。')
     reviewed=all(r['status']=='completed' for r in results)
     complete=reviewed and sampling_coverage.get('complete') is True

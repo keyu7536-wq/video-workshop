@@ -327,6 +327,14 @@ def snapshot(job):
                     'chapter':str(shot.get('chapter',''))})
         except (OSError,ValueError,TypeError,KeyError):
             result['rendered_segments']=[]
+    if result.get('plan') and sources is not None:
+        from studio_visual_quality import visual_quality_report
+        measured=None
+        bound=(job/'output/render_receipt.json').is_file() or (job/'output/final_review.json').is_file()
+        if current_export and bound and timeline.is_file():
+            try:measured=pv.load_json(timeline)
+            except (OSError,ValueError):pass
+        result['visual_quality']=visual_quality_report(result['plan'],sources,measured)
     return result
 
 
@@ -372,6 +380,19 @@ class Handler(BaseHTTPRequestHandler):
                         except (ValueError,OSError,KeyError): pass
                 return self.json({'jobs':items[:40]})
             if path=='/api/job': return self.json(snapshot(job_path(query.get('id',[''])[0])))
+            if path=='/api/visual-preview':
+                from studio_visual_preview import visual_preview
+                if len(parsed.query)>16000 or set(query)-{'job','id','bbox','beats','index','display'}:
+                    raise ValueError('逐步放大预览参数无效。')
+                job=job_path(query.get('job',[''])[0]);source_id=query.get('id',[''])[0]
+                source=next((s for s in pv.load_json(job/'analysis/sources.json') if s['id']==source_id),None)
+                if source is None:raise ValueError('当前任务找不到这项素材。')
+                crop=json.loads(query.get('bbox',['null'])[0]);beats=json.loads(query.get('beats',['[]'])[0])
+                display=json.loads(query['display'][0]) if 'display' in query else pv.load_json(job/'request.json')
+                if not isinstance(display,dict):raise ValueError('画面设置无效。')
+                target=visual_preview(job,source,crop,beats,int(query.get('index',['0'])[0]),display)
+                return self.json({'url':f'/files/{job.name}/'+target.relative_to(job).as_posix(),
+                    'inspection':'静态构图预览；不含真实字幕或实测时间。'})
             if path=='/api/column-preview':
                 from hashlib import sha256
                 from studio_chart_composition import render_column_crop,validate_column_crop,RENDER_VERSION

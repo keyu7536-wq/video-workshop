@@ -26,6 +26,9 @@ def file_hash(path):
 
 def review_stale(job,review,plan_hash):
     video=job/'output/video.mp4';project=job/'project.json'
+    timeline=job/'output/rendered_shots.json'
+    if review.get('timeline_sha256') and (not timeline.is_file() or review['timeline_sha256']!=file_hash(timeline)):
+        return True
     return (review.get('plan_hash')!=plan_hash
         or review.get('settings_hash')!=render_settings_hash(pv.load_json(job/'request.json'))
         or not video.is_file() or review.get('video_sha256')!=file_hash(video)

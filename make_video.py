@@ -432,6 +432,23 @@ async def build(args):
                             'file':shot.get('file','')})
                     stages.append({**stage,'start':timestamp})
                 shot['diagram_timeline']=stages
+            if shot.get('visual_beats'):
+                stages=[]
+                for index,stage in enumerate(shot['visual_beats']):
+                    timestamp=0.0 if index==0 else cue_time(stage['cue'],block['narration'],words)-shot['local_start']
+                    reason=('visual_cue_outside_shot' if not 0<=timestamp<shot['render_duration']
+                            else 'visual_cues_not_increasing' if stages and timestamp<=stages[-1]['start'] else None)
+                    if reason:
+                        timing_issues.append({'block_id':block['id'],'shot_index':shot['shot_index'],
+                            'reason':reason,'time_basis':'block_local','block_start_seconds':cursor,
+                            'stage_index':index,'cue':stage.get('cue',''),
+                            'expected_cue_time':timestamp+shot['local_start'],'stage_local_time':timestamp,
+                            'start':shot['local_start'],'end':shot['local_end'],
+                            'available_cue_window':shot['render_duration'],
+                            'missing_seconds':round(max(0,-timestamp,timestamp-shot['render_duration']+1/fps),6),
+                            'file':shot.get('file','')})
+                    stages.append({**stage,'start':timestamp})
+                shot['visual_timeline']=stages
         shots.extend(selected)
         phrases.extend(subtitle_phrases(block["narration"], words, cursor))
         sample_count = round(duration * RATE_HZ)
@@ -471,13 +488,21 @@ async def build(args):
             ensure_ascii=False,indent=2),encoding='utf-8')
         # Do not spend time rendering any diagram until every block has passed
         # measured timing and source-coverage validation.
-        for shot in shots:
+        for rendered_index,shot in enumerate(shots):
             if shot['kind']=='diagram':
                 from studio_diagrams import render_diagram
                 graph={**shot['diagram'],'stages':shot['diagram_timeline']}
                 target=(root/shot['file']).resolve();target.parent.mkdir(parents=True,exist_ok=True)
                 render_diagram(graph,target,shot['render_duration'],width,height,fps,ffmpeg)
                 shot.update(kind='video',duration=shot['render_duration'])
+                shot['in']=0
+            elif shot.get('visual_beats'):
+                from studio_visual_beats import render_visual_beats
+                source=(root/shot['file']).resolve()
+                target=work/f'visual_beats_{rendered_index:03}.mp4'
+                render_visual_beats(source,shot['visual_timeline'],target,
+                                    shot['render_duration'],width,height,fps,ffmpeg)
+                shot.update(kind='video',file=str(target),duration=shot['render_duration'])
                 shot['in']=0
         studio_render.write_subtitles(output, work, font, config['title'], shots, phrases, cursor, width, height, config)
     else:

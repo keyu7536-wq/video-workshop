@@ -12,7 +12,7 @@ function displaySettingsChanged(){
 }
 function displayDimensions(){const s=displaySettings();return ({portrait:[1080,1920],landscape:[1920,1080],square:[1080,1080],reference:[720,1280]})[s.format]||[s.width,s.height];}
 function validateDisplayForm(){const [w,h]=displayDimensions();if([w,h].some(n=>!Number.isInteger(n)||n<320||n>3840||n%2)||w*h>8294400||Math.max(w/h,h/w)>3)throw Error('宽高须为320～3840之间的偶数，总像素不超过4K，长宽比例不超过3:1。');}
-async function requireDisplayServer(){const health=await api('/api/health');if(health.version<14)throw Error('界面与后台版本不一致，请用项目启动脚本打开新版服务。');}
+async function requireDisplayServer(){const health=await api('/api/health');if(health.version<15)throw Error('界面与后台版本不一致，请用项目启动脚本打开新版服务。');}
 function displayToForm(s){$('format').value=s.format||'portrait';$('customWidth').value=s.width||1920;$('customHeight').value=s.height||1080;$('layoutStyle').value=s.layout_style||'editorial';$('mediaFit').value=s.media_fit||'contain';$('showSources').checked=s.show_sources??true;$('showDisclosure').checked=s.show_disclosure??true;$('minimalText').checked=s.minimal_text??false;updateDisplayPreview();}
 function previewBox(w,h){if($('layoutStyle').value==='immersive')return previewProtected?[Math.floor(w*.025),Math.floor(h*.06),Math.floor(w*.95),Math.floor(h*.78)]:[0,0,w,h];return h>w?[Math.floor(w*.035),Math.floor(h*.27),Math.floor(w*.93),Math.floor(h*.40)]:[Math.floor(w*.035),Math.floor(h*.20),Math.floor(w*.93),Math.floor(h*.57)];}
 function refreshPreviewSources(){

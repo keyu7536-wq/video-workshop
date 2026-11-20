@@ -180,8 +180,9 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
     """Return ``(label/Path pairs, coverage)`` without changing intake records.
 
     Selected page/image originals and selected-video contact sheets take
-    priority, then unique actual crops, then optional canvas compositions and
-    unused intake samples. Omissions are explicit within the same image budget.
+    priority, then unique actual crops, then optional canvas compositions (each
+    detail-view stage is a separate image) and unused intake samples. Omissions
+    are explicit within the same image budget; stage indices are not timings.
     """
     if type(max_images) is not int or not 1 <= max_images <= 65:
         raise ValueError('审核附图预算须为1至65。')
@@ -219,7 +220,15 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
             if request is not None:
                 focus=_bbox(shot.get('focus'))
                 key=(source_id,tuple(bbox or []),tuple(focus or []),json.dumps(column_crop,sort_keys=True))
+                beats=shot.get('visual_beats') or []
+                if beats:
+                    from studio_visual_beats import validate_beats
+                    beats=validate_beats(beats,block.get('narration'))
+                    if focus or column_crop:
+                        raise ValueError('逐步放大不能同时使用 focus 或 column_crop。')
+                    key=key+(json.dumps(beats,sort_keys=True,ensure_ascii=False),)
                 item=compositions.setdefault(key,{'source_id':source_id,'bbox':bbox or [],'focus':focus or [],'column_crop':column_crop,'shots':[]})
+                if beats:item['visual_beats']=beats
                 item['shots'].append({'block_id':block.get('id'),'shot_index':index})
 
     def relevant_video(label):
@@ -268,6 +277,39 @@ def prepare_review_assets(job, plan, sources, prior_images, max_images=65,reques
         result.append((label, path))
         coverage['crops'].append(item | {'label': label, 'path': str(path), 'actual_bounds': actual})
     for item in compositions.values():
+        if item.get('visual_beats'):
+            # Import at call time: visual_preview uses this module's registered
+            # source renderer, so importing it at module scope would cycle.
+            from studio_visual_preview import visual_preview
+            from studio_display import dimensions
+            from PIL import Image
+            source=dict(selected[item['source_id']])
+            source['file']=str(_inside(job,source['file']))
+            width,height=dimensions(request)
+            beats=item['visual_beats']
+            for index,beat in enumerate(beats):
+                stage={**item,'kind':'visual_beat','stage_index':index,'stage_count':len(beats),
+                       'cue':beat['cue'],'stage_bbox':list(beat['bbox'])}
+                if len(result)>=max_images:
+                    coverage['omitted_compositions'].append(stage|{
+                        'reason':'Image budget; this planned detail-view stage is not attached or inspected.'})
+                    continue
+                preview=visual_preview(job,source,item['bbox'] or [0,0,1,1],beats,index,request)
+                # Keep the same bounded review raster size as other planned
+                # compositions, without changing the editor's preview cache.
+                path=_target(folder,preview,None,{'visual-stage-review-v1':index})
+                with Image.open(preview) as original:
+                    picture=original.convert('RGB')
+                    picture.thumbnail((1600,1600),Image.Resampling.LANCZOS)
+                    picture.save(path)
+                label=(item['source_id']+f' · 逐步放大阶段 {index+1}/{len(beats)}（非成片，未计时）'
+                       +' cue='+json.dumps(beat['cue'],ensure_ascii=False))
+                result.append((label,path))
+                coverage['compositions'].append(stage|{'canvas':[width,height],
+                    'preview_pixels':list(picture.size),'label':label,'path':str(path),
+                    'scope':'Planned source/detail composition for this cue stage; stage index is not time. '
+                            'No recorded speech timing, encoded frames, captions or continuous motion inspected.'})
+            continue
         if len(result)>=max_images:
             coverage['omitted_compositions'].append(item|{'reason':'Image budget; composition not inspected.'})
             continue

@@ -30,6 +30,8 @@ REQUIRED = (
     'studio_server.py', 'studio_voice.py', 'studio_story.py', 'studio_documents.py', 'studio_context.py', 'studio_process.py', 'studio_recovery.py',
     'studio_network.py', 'studio_search.py', 'studio_plan_repair.py', 'studio_repository.py', 'studio_review_assets.py', 'studio_media.py',
     'studio_chart_composition.py', 'studio_repair_budget.py', 'studio_repair_checkpoint.py', 'studio_final_repair.py',
+    'studio_director.py', 'studio_visual_beats.py', 'studio_visual_quality.py', 'studio_visual_preview.py',
+    'studio/director.js',
     'studio/index.html', 'studio/app.js', 'studio/display.js', 'studio/preview.js', 'studio/style.css', 'studio/voice-audition.html',
     'skills/paper-video-director/SKILL.md',
     'skills/paper-video-director/agents/openai.yaml',
@@ -54,6 +56,8 @@ REQUIRED = (
     'tests/test_author_media.py', 'tests/test_audio_playback_ui.py', 'tests/test_backend_isolation.py', 'tests/test_console_output.py',
     'tests/test_plan_gate.py', 'tests/test_effective_canvas.py', 'tests/test_duration.py', 'tests/test_model_response_safety.py', 'tests/test_atomic_json.py',
     'tests/test_chart_composition.py', 'tests/test_chart_pipeline.py', 'tests/test_repair_budget.py', 'tests/test_repair_checkpoint.py', 'tests/test_final_repair.py',
+    'tests/test_director.py', 'tests/test_director_ui.py', 'tests/test_visual_beats.py', 'tests/test_visual_beats_pipeline.py',
+    'tests/test_visual_quality.py', 'tests/test_visual_quality_integration.py', 'tests/test_visual_beats_review.py',
 )
 OPTIONAL = (
     'pyproject.toml', 'NOTICE', 'NOTICE.md',

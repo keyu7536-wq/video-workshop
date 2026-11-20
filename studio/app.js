@@ -144,7 +144,7 @@ function renderPlanReview(){
     const budget=job.repair_budget;
     html+=budget.error?`<p id="repairBudgetStatus" class="small notice warning">无法读取自动返修次数：${escapeHTML(budget.error)}</p>`:`<p id="repairBudgetStatus" class="small muted">自动返修：已用 ${escapeHTML(budget.used)} / ${escapeHTML(budget.limit??3)} 次，剩余 ${escapeHTML(budget.remaining)} 次。${budget.pending_review?'已有候选等待复核；继续时只复核同一候选，不再次改写。':budget.stale?'输入已修改，生成时会核对新的返修预算。':repairBudgetExhausted()?'本版自动返修已用完，请根据意见手动修改；反复点击不会重置次数。':''}</p>`;
   }
-  $('reviewBanner').innerHTML=html;
+  $('reviewBanner').innerHTML=html+visualQualityHTML();
   $('reviewBanner').querySelectorAll('[data-review-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.reviewShot.split(',').map(Number)));
   $('reviewBanner').querySelectorAll('[data-review-block]').forEach(button=>button.onclick=()=>{
     const card=$('storyboard').querySelector(`[data-block-index="${button.dataset.reviewBlock}"]`);
@@ -168,6 +168,7 @@ function renderEditor() {
   $('storyboard').querySelectorAll('[data-narration]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.narration)].narration=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
   $('storyboard').querySelectorAll('[data-chapter]').forEach(input=>input.oninput=()=>{plan.blocks[Number(input.dataset.chapter)].chapter=input.value;state.dirty=true;renderPlanReview();updateControls();renderMeasuredSegments(false);});
   $('storyboard').querySelectorAll('[data-shot]').forEach(button=>button.onclick=()=>openShot(...button.dataset.shot.split(',').map(Number)));
+  renderDirectorFields();
 }
 async function savePlan() {
   if(!state.job?.plan)throw Error('请先生成文稿与分镜。');
@@ -243,10 +244,10 @@ function openShot(bi,si) {
   $('columnCropEnabled').checked=Boolean(shot.column_crop);$('columnCropSpec').value=shot.column_crop?JSON.stringify(shot.column_crop):'';
   $('shotSource').innerHTML='<option value="card">讲解卡片</option>'+(shot.kind==='diagram'?'<option value="diagram">原理动态图 · 按旁白推进</option>':'')+(state.job.sources||[]).filter(source=>['page','image','video'].includes(source.type)).map(source=>`<option value="${escapeHTML(source.id)}">${escapeHTML(source.name)}${source.page?' · 第'+source.page+'页':''}</option>`).join('');
   $('shotSource').value=['card','diagram'].includes(shot.kind)?shot.kind:shot.source_id;$('shotIn').value=shot.in;$('shotDuration').value=shot.duration;$('shotLabel').value=shot.label;$('shotCue').value=shot.cue;$('shotCardText').value=shot.card_text;
-  updateShotSource();$('shotDialog').showModal();if(shot.column_crop)updateColumnCropPreview().catch(()=>{});
+  prepareVisualBeatEditor(shot);updateShotSource();updateVisualBeatSource();$('shotDialog').showModal();if(shot.column_crop)updateColumnCropPreview().catch(()=>{});
 }
 function updateShotSource(){const source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value);const image=['page','image'].includes(source?.type);$('cropWrap').hidden=!image;$('cropHint').hidden=!image;$('focusControl').hidden=!image;$('keepControl').hidden=source?.type!=='video';$('cropHint').textContent='拖选裁切范围；勾选高亮只加框，保留原裁图。需要去掉多余内容时，先取消勾选高亮，再拖选要保留的区域。';$('cardTextLabel').hidden=$('shotSource').value!=='card';$('shotIn').disabled=source?.type!=='video';if(image){$('cropImage').src=sourceURL(source.id);$('cropImage').onload=drawCrop;}updateShotPreview();}
-$('shotSource').onchange=()=>{state.crop=[0,0,1,1];$('columnCropEnabled').checked=false;$('columnCropSpec').value='';updateShotSource();};
+$('shotSource').onchange=()=>{state.crop=[0,0,1,1];$('columnCropEnabled').checked=false;$('columnCropSpec').value='';updateShotSource();updateVisualBeatSource(true);};
 function drawCrop(){const [x0,y0,x1,y1]=state.crop;$('cropBox').style.cssText=`left:${x0*100}%;top:${y0*100}%;width:${(x1-x0)*100}%;height:${(y1-y0)*100}%;`;}
 let cropStart=null;
 function cropPoint(event){const box=$('cropImage').getBoundingClientRect();return [Math.max(0,Math.min(1,(event.clientX-box.left)/box.width)),Math.max(0,Math.min(1,(event.clientY-box.top)/box.height))];}
@@ -256,9 +257,14 @@ $('cropWrap').onpointerup=()=>{cropStart=null;};
 $('shotForm').onsubmit=async event=>{
   event.preventDefault();
   let columnCrop=null;
+  let visualBeats=[];
+  try{visualBeats=readVisualBeats();}catch(error){toast(error.message);return;}
   if($('columnCropEnabled').checked){try{columnCrop=await updateColumnCropPreview();if(!columnCrop)return;}catch(error){toast(error.message);return;}}
   const [bi,si]=state.shot,shot=state.job.plan.blocks[bi].shots[si],source=(state.job.sources||[]).find(source=>source.id===$('shotSource').value),focus=!columnCrop&&$('shotFocus').checked&&['page','image'].includes(source?.type);
   Object.assign(shot,{kind:$('shotSource').value==='diagram'?'diagram':source?.type||'card',source_id:source?.id||'',in:Number($('shotIn').value)||0,duration:Number($('shotDuration').value),bbox:columnCrop?[]:['page','image'].includes(source?.type)?(focus?(state.originalBBox.length===4?state.originalBBox:source.type==='page'?[0,0,1,1]:[]):[...state.crop]):[],column_crop:columnCrop,focus:focus?[...state.crop]:[],keep_full:source?.type==='video'&&$('shotKeepFull').checked,label:$('shotLabel').value,card_text:$('shotCardText').value,cue:$('shotCue').value});
+  shot.visual_beats=visualBeats;
+  if(shot.kind!=='diagram')shot.diagram=null;
+  if(visualBeats.length){shot.bbox=[...visualBeatCrop];shot.focus=[];}
   state.dirty=true;$('shotDialog').close();renderEditor();updateControls();renderMeasuredSegments(false);
 };
 
@@ -321,4 +327,5 @@ async function initialize(){
   await poll();setInterval(poll,1600);
 }
 initializeShotPreviews();
+initializeDirectorEditor();
 initialize();
