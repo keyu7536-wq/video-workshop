@@ -40,9 +40,11 @@ GitHub Actions 对 Windows / Linux、Python 3.11 / 3.13 执行依赖安装、浏
 
 ```bash
 python scripts/build_release.py --check
-python scripts/build_release.py --version 0.3.5
+python scripts/build_release.py
 ```
 
-构建器只选择明确允许发布的源码、测试和文档，生成 ZIP、SHA-256 校验文件及逐文件清单。已有版本不覆盖。解压到新目录，重新安装并执行回归和离线渲染，确认发布包可独立运行。
+构建器默认静态读取源码根目录 `app_config.py` 中的 `VERSION`，不执行该文件。使用 `--root` 时读取目标目录的版本；`--version` 可显式覆盖包版本。缺失、动态表达式或无效的默认版本会报错；`--check` 仅检查发布文件清单和敏感内容，不解析版本。
+
+构建器只选择明确允许发布的源码、测试和文档，生成 ZIP、SHA-256 校验文件及逐文件清单。已有版本不覆盖。新增公开文件时更新 `scripts/build_release.py` 的清单，并确认 Git 已跟踪该文件。解压到新目录，重新安装并执行回归和离线渲染，确认发布包可独立运行。
 
 GitHub 仓库只推送干净源码。任务、作者媒体、模型权重、本机配置和凭据留在本机。首个公开版本应清楚说明已验证环境及剩余限制；公开源码不等于已经具备公网多用户部署能力。

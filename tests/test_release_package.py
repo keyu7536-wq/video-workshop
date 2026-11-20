@@ -1,9 +1,12 @@
 import importlib.util
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('release_builder',Path(__file__).resolve().parents[1]/'scripts/build_release.py')
 release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
@@ -61,5 +64,56 @@ class ReleaseTests(unittest.TestCase):
             first=release.build(root,Path(folder)/'first','0.1.0')
             second=release.build(root,Path(folder)/'second','0.1.0')
             self.assertEqual(first['sha256'],second['sha256'])
+
+    def test_cli_default_version_comes_from_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'repo';root.mkdir();self.fixture(root)
+            (root/'app_config.py').write_text("VERSION = '0.6.0'\n",encoding='utf-8')
+            with patch.object(release,'ROOT',root),redirect_stdout(io.StringIO()):
+                release.main(['--output',str(Path(folder)/'dist')])
+            archive=Path(folder)/'dist/video-workshop-0.6.0.zip'
+            with zipfile.ZipFile(archive) as bundle:
+                manifest=json.loads(bundle.read('video-workshop/RELEASE_MANIFEST.json'))
+                self.assertEqual(manifest['version'],'0.6.0')
+
+    def test_cli_root_selects_that_sources_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'app_config.py').write_text("VERSION: str = '2.3.4-rc.1'\n",encoding='utf-8')
+            with patch.object(release,'build',return_value={}) as build,redirect_stdout(io.StringIO()):
+                release.main(['--root',str(root),'--output',str(root/'dist')])
+            self.assertEqual(build.call_args.args,(root.resolve(),root/'dist','2.3.4-rc.1'))
+
+    def test_cli_explicit_version_does_not_read_source_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with patch.object(release,'build',return_value={}) as build,redirect_stdout(io.StringIO()):
+                release.main(['--root',str(root),'--version','3.2.1'])
+            self.assertEqual(build.call_args.args[2],'3.2.1')
+
+    def test_static_version_read_never_executes_module(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);marker=root/'executed'
+            (root/'app_config.py').write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\nVERSION = '1.2.3'\n",encoding='utf-8')
+            self.assertEqual(release.source_version(root),'1.2.3')
+            self.assertFalse(marker.exists())
+
+    def test_missing_invalid_or_dynamic_version_is_rejected_without_execution(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);marker=root/'executed'
+            with self.assertRaisesRegex(ValueError,'app_config.py'):release.source_version(root)
+            for source in ("NAME = 'fixture'", "VERSION = 'not-a-version'", 'VERSION = 123',
+                           "VERSION = '1.2.3'\nVERSION = '2.3.4'", "VERSION = (",
+                           f"VERSION = __import__('pathlib').Path({str(marker)!r}).touch() or '1.2.3'"):
+                with self.subTest(source=source[:30]):
+                    (root/'app_config.py').write_text(source,encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError,'app_config.py.*VERSION'):release.source_version(root)
+                    self.assertFalse(marker.exists())
+
+    def test_check_only_does_not_require_a_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);self.fixture(root)
+            with redirect_stdout(io.StringIO()),self.assertRaises(SystemExit) as caught:
+                release.main(['--root',str(root),'--check'])
+            self.assertEqual(caught.exception.code,0)
 
 if __name__=='__main__':unittest.main()

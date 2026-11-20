@@ -47,6 +47,7 @@ docs/*
 !docs/story-and-visuals.md
 !docs/media-sources.md
 !docs/testing.md
+!docs/architecture.md
 tests/check_*.py
 tests/create_demo.py
 tests/test_desktop_app.py

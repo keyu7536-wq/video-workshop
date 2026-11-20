@@ -1,6 +1,16 @@
 # 参与开发
 
-先阅读 README 与 `docs/production-workflow.md`。安装开发依赖后运行：
+先看 [使用流程](docs/production-workflow.md)，再按 [架构与代码导航](docs/architecture.md) 找到要修改的模块。前端位于 `studio/`，后端按职责拆成根目录的 Python 模块，安装和发布工具位于 `scripts/`。
+
+## 准备开发环境
+
+从仓库根目录创建并激活虚拟环境，再安装依赖：
+
+```bash
+python -m venv .venv
+```
+
+Windows PowerShell 使用 `.\.venv\Scripts\Activate.ps1`；Linux / macOS 使用 `source .venv/bin/activate`。也可以直接使用虚拟环境里的 Python，无需激活。随后执行：
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -10,7 +20,11 @@ python scripts/smoke_render.py
 python scripts/build_release.py --check
 ```
 
+## 修改与验证
+
 修改应说明具体输入、原来行为、改后行为与验证结果。涉及时间线、字幕、裁切或配音时，检查实际编码输出，不只检查计划 JSON。论文事实要能回到来源，无法访问的材料应记录缺口。
+
+新增模块、测试或公开文档时，同时检查 `scripts/build_release.py` 的发布清单；新增 `docs/` 文件还需加入 `.gitignore` 中的文档白名单。CI 和源码 ZIP 应覆盖同一套可发布文件。版本号在 `app_config.py` 中维护，打包工具默认读取该版本。
 
 测试使用自造文本、图案和短音频，不提交个人任务、研究论文、账号配置、日志、下载模型或未授权媒体。接口密钥只在本地配置，示例使用明显无效占位值。新依赖同时更新依赖文件及第三方说明。
 

@@ -5,6 +5,7 @@ This scanner is a release guard, not a comprehensive secret detector.
 """
 from __future__ import annotations
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -15,11 +16,12 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SLUG = 'video-workshop'
+VERSION_PATTERN = re.compile(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?')
 REQUIRED = (
     'README.md', 'CHANGELOG.md', '.gitignore', '.gitattributes', '.editorconfig', 'start.cmd', 'start.sh', 'app_config.py', 'app.example.json',
     'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'SECURITY.md',
     'docs/production-workflow.md', 'docs/project-audit.md', 'docs/configuration.md', 'docs/story-and-visuals.md',
-    'docs/media-sources.md', 'docs/testing.md',
+    'docs/media-sources.md', 'docs/testing.md', 'docs/architecture.md',
     '.github/ISSUE_TEMPLATE/bug_report.yml', '.github/ISSUE_TEMPLATE/feature_request.yml',
     '.github/ISSUE_TEMPLATE/config.yml', '.github/PULL_REQUEST_TEMPLATE.md',
     'requirements.txt', 'requirements-paper.txt', 'requirements-dev.txt',
@@ -90,6 +92,24 @@ def sha256(path: Path) -> str:
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
+def source_version(root: Path) -> str:
+    """Read a literal VERSION from the selected source without importing its code."""
+    try:
+        tree = ast.parse((root/'app_config.py').read_text(encoding='utf-8-sig'))
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        raise ValueError('app_config.py VERSION could not be read as Python source') from exc
+    values = []
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+        if any(isinstance(target, ast.Name) and target.id == 'VERSION' for target in targets):
+            values.append(node.value if not isinstance(node, ast.AugAssign) else None)
+    if len(values) != 1 or not isinstance(values[0], ast.Constant) or not isinstance(values[0].value, str):
+        raise ValueError('app_config.py must define VERSION once as a literal string')
+    version = values[0].value
+    if not VERSION_PATTERN.fullmatch(version):
+        raise ValueError('app_config.py VERSION must be a semantic version such as 0.6.0')
+    return version
+
 def selected_files(root: Path) -> list[Path]:
     root = root.resolve()
     missing = [name for name in REQUIRED if not (root/name).is_file()]
@@ -122,7 +142,7 @@ def inspect(root: Path, files: list[Path]) -> list[dict]:
     return findings
 
 def build(root: Path, destination: Path, version: str) -> dict:
-    if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',version):
+    if not VERSION_PATTERN.fullmatch(version):
         raise ValueError('Version must be a semantic version such as 0.1.0')
     root = root.resolve(); destination = destination.resolve()
     files = selected_files(root); findings = inspect(root,files)
@@ -165,17 +185,21 @@ def build(root: Path, destination: Path, version: str) -> dict:
         checksum.write_text(f'{digest}  {archive.name}\n',encoding='utf-8')
     return {'folder':str(target),'archive':str(archive),'sha256':digest,'files':len(files)}
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=ROOT)
     parser.add_argument('--output',type=Path,default=ROOT/'dist')
-    parser.add_argument('--version',default='0.5.0')
+    parser.add_argument('--version',help='Override the VERSION literal in the selected source app_config.py')
     parser.add_argument('--check',action='store_true')
-    args=parser.parse_args();root=args.root.resolve()
+    args=parser.parse_args(argv);root=args.root.resolve()
     if args.check:
         files=selected_files(root);findings=inspect(root,files)
         print(json.dumps({'files':len(files),'passed':not findings,'findings':findings},ensure_ascii=True,indent=2))
         raise SystemExit(1 if findings else 0)
-    print(json.dumps(build(root,args.output,args.version),ensure_ascii=True,indent=2))
+    try:
+        version=args.version if args.version is not None else source_version(root)
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(json.dumps(build(root,args.output,version),ensure_ascii=True,indent=2))
 
 if __name__=='__main__':main()
